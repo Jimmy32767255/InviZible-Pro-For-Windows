@@ -10,11 +10,11 @@ use crate::proxy::ProxyModule;
 use crate::logger::Logger;
 
 // 定义模块颜色
-pub const TOR_COLOR: Color32 = Color32::from_rgb(89, 49, 107); // #59316B
+pub const TOR_COLOR: Color32 = Color32::from_rgb(89, 49, 107); // 洋葱色
 pub const DNS_COLOR: Color32 = Color32::from_rgb(0, 92, 185);  // 蓝色
 pub const I2P_COLOR: Color32 = Color32::from_rgb(102, 51, 153); // 紫色
 pub const FIREWALL_COLOR: Color32 = Color32::from_rgb(220, 53, 69); // 红色
-pub const SETTINGS_COLOR: Color32 = Color32::from_rgb(108, 117, 125); // 灰色
+pub const SETTINGS_COLOR: Color32 = Color32::from_rgb(140, 192, 170); // 青色
 pub const LOG_COLOR: Color32 = Color32::from_rgb(108, 117, 125); // 灰色
 
 // 定义应用程序的标签页
