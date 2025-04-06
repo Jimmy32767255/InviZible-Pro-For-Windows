@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, RichText, ScrollArea, Ui};
+use eframe::egui::{Color32, RichText, ScrollArea, Ui};
 use chrono::{DateTime, Local};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -112,7 +112,31 @@ impl Logger {
         
         // 日志过滤控件
         ui.horizontal(|ui| {
-            // 这里可以添加过滤控件
+            // 日志级别过滤
+            egui::ComboBox::from_label("日志级别")
+                .selected_text(match self.filter_level {
+                    Some(LogLevel::Info) => "INFO",
+                    Some(LogLevel::Warning) => "WARN",
+                    Some(LogLevel::Error) => "ERROR",
+                    Some(LogLevel::Debug) => "DEBUG",
+                    None => "全部",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut self.filter_level, None, "全部").clicked() {
+                        self.filter_level = None;
+                    }
+                    for level in [LogLevel::Info, LogLevel::Warning, LogLevel::Error, LogLevel::Debug] {
+                        if ui.selectable_value(&mut self.filter_level, Some(level), level.str()).clicked() {
+                            self.filter_level = Some(level);
+                        }
+                    }
+                });
+
+            // 模块过滤
+            ui.add(egui::TextEdit::singleline(&mut self.filter_module.get_or_insert_with(String::new))
+                .hint_text("过滤模块"));
+
+            ui.add_space(10.0);
             if ui.button("清除日志").clicked() {
                 if let Some(logger) = self.as_mutex() {
                     if let Ok(mut logger) = logger.lock() {
@@ -161,6 +185,6 @@ impl Logger {
     
     // 获取自身的互斥锁引用（用于UI中的按钮回调）
     fn as_mutex(&self) -> Option<Arc<Mutex<Logger>>> {
-        None // 在实际使用时会被替换为真实的互斥锁引用
+        Some(Arc::new(Mutex::new(self.clone())))
     }
 }

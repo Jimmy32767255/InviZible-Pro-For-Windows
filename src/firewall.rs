@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::logger::{Logger, LogLevel};
+use crate::logger::Logger;
 use crate::app::FIREWALL_COLOR;
 
 // 防火墙规则类型
@@ -145,30 +145,55 @@ impl FirewallModule {
     // 启用/禁用防火墙
     fn toggle_firewall(&mut self) {
         self.enabled = !self.enabled;
-        if let Ok(mut logger) = self.logger.lock() {
-            logger.info("防火墙", &format!("防火墙已{}", if self.enabled { "启用" } else { "禁用" }));
+        let is_enabled = self.enabled; // 先保存状态，避免后续借用冲突
+        
+        {
+            // 使用单独的作用域限制logger的借用范围
+            if let Ok(mut logger) = self.logger.lock() {
+                logger.info("防火墙", &format!("防火墙已{}", if is_enabled { "启用" } else { "禁用" }));
+            }
         }
     }
     
     // 启用/禁用规则
     fn toggle_rule(&mut self, id: usize) {
-        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == id) {
-            rule.enabled = !rule.enabled;
+        // 先查找规则并获取必要信息，避免同时借用
+        let rule_info = self.rules.iter_mut()
+            .find(|r| r.id == id)
+            .map(|rule| {
+                let name = rule.name.clone();
+                let new_state = !rule.enabled;
+                rule.enabled = new_state;
+                (name, new_state)
+            });
+        
+        // 如果找到了规则，记录日志
+        if let Some((name, enabled)) = rule_info {
             if let Ok(mut logger) = self.logger.lock() {
-                logger.info("防火墙", &format!("规则 '{}' 已{}", rule.name, if rule.enabled { "启用" } else { "禁用" }));
+                logger.info("防火墙", &format!("规则 '{}' 已{}", name, if enabled { "启用" } else { "禁用" }));
             }
         }
     }
     
     // 更改规则动作
     fn toggle_rule_action(&mut self, id: usize) {
-        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == id) {
-            rule.action = match rule.action {
-                RuleAction::Allow => RuleAction::Block,
-                RuleAction::Block => RuleAction::Allow,
-            };
+        // 先查找规则并获取必要信息，避免同时借用
+        let rule_info = self.rules.iter_mut()
+            .find(|r| r.id == id)
+            .map(|rule| {
+                let name = rule.name.clone();
+                let new_action = match rule.action {
+                    RuleAction::Allow => RuleAction::Block,
+                    RuleAction::Block => RuleAction::Allow,
+                };
+                rule.action = new_action.clone();
+                (name, new_action)
+            });
+        
+        // 如果找到了规则，记录日志
+        if let Some((name, action)) = rule_info {
             if let Ok(mut logger) = self.logger.lock() {
-                logger.info("防火墙", &format!("规则 '{}' 动作已更改为 {:?}", rule.name, rule.action));
+                logger.info("防火墙", &format!("规则 '{}' 动作已更改为 {:?}", name, action));
             }
         }
     }
@@ -183,8 +208,11 @@ impl FirewallModule {
         self.running_applications.insert("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".to_string(), true);
         self.running_applications.insert("C:\\Windows\\System32\\svchost.exe".to_string(), true);
         
+        // 获取应用程序数量，避免同时借用
+        let app_count = self.running_applications.len();
+        
         if let Ok(mut logger) = self.logger.lock() {
-            logger.info("防火墙", &format!("扫描到 {} 个运行中的应用程序", self.running_applications.len()));
+            logger.info("防火墙", &format!("扫描到 {} 个运行中的应用程序", app_count));
         }
     }
     
@@ -244,11 +272,13 @@ impl FirewallModule {
                     ui.end_row();
                     
                     // 规则列表
-                    for rule in &self.rules {
+                    let rules_clone = self.rules.clone(); // 克隆规则列表以避免借用冲突
+                    for rule in &rules_clone {
                         // 启用/禁用复选框
                         let mut enabled = rule.enabled;
+                        let rule_id = rule.id; // 先获取ID避免借用冲突
                         if ui.checkbox(&mut enabled, "").changed() {
-                            self.toggle_rule(rule.id);
+                            self.toggle_rule(rule_id);
                         }
                         
                         // 规则名称
@@ -271,18 +301,19 @@ impl FirewallModule {
                             RuleAction::Block => RichText::new("阻止").color(Color32::RED),
                         };
                         if ui.selectable_label(false, action_text).clicked() {
-                            self.toggle_rule_action(rule.id);
+                            self.toggle_rule_action(rule_id);
                         }
                         
                         // 操作按钮
+                        let rule_id = rule.id; // 再次获取ID避免闭包中的借用冲突
                         ui.horizontal(|ui| {
                             if ui.button("编辑").clicked() {
                                 // 编辑规则逻辑
-                                self.selected_rule = Some(rule.id);
+                                self.selected_rule = Some(rule_id);
                                 self.edit_mode = true;
                             }
                             if ui.button("删除").clicked() {
-                                self.remove_rule(rule.id);
+                                self.remove_rule(rule_id);
                             }
                         });
                         
@@ -359,8 +390,16 @@ impl FirewallModule {
         
         // 添加/编辑规则对话框
         if self.edit_mode {
-            // 在实际应用中，这里会使用一个模态对话框
-            // 简化起见，这里直接在主界面上显示编辑区域
+            let mut dialog_open = true;
+            egui::Window::new(if self.selected_rule.is_some() { "编辑规则" } else { "添加规则" })
+                .open(&mut dialog_open)
+                .show(ui.ctx(), |ui| {
+                    // 对话框内容
+                    if !dialog_open {
+                        self.edit_mode = false;
+                        self.new_rule_name.clear();
+                    }
+                });
             ui.separator();
             ui.heading(if self.selected_rule.is_some() { "编辑规则" } else { "添加规则" });
             
@@ -372,8 +411,65 @@ impl FirewallModule {
                 }
             });
             
-            // 这里会有更多的编辑控件
-            // ...
+            ui.horizontal(|ui| {
+                ui.label("规则类型:");
+                egui::ComboBox::from_label("").selected_text(match self.new_rule_type {
+                    RuleType::Application => "应用程序",
+                    RuleType::Port => "端口",
+                    RuleType::Address => "地址",
+                }).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.new_rule_type, RuleType::Application, "应用程序");
+                    ui.selectable_value(&mut self.new_rule_type, RuleType::Port, "端口");
+                    ui.selectable_value(&mut self.new_rule_type, RuleType::Address, "地址");
+                });
+            });
+
+            match self.new_rule_type {
+                RuleType::Application => {
+                    ui.horizontal(|ui| {
+                        ui.label("应用程序路径:");
+                        if ui.text_edit_singleline(&mut self.new_rule_name).changed() {
+                            // 自动填充规则名称
+                            self.new_rule_name = self.new_rule_name.split("\\").last().unwrap_or("未知应用").to_string();
+                        }
+                    });
+                },
+                RuleType::Port => {
+                    ui.horizontal(|ui| {
+                        ui.label("端口号:");
+                        ui.add(egui::DragValue::new(&mut self.new_rule_port).speed(1));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("协议:");
+                        egui::ComboBox::from_label("").selected_text("TCP").show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.new_rule_protocol, "TCP", "TCP");
+                            ui.selectable_value(&mut self.new_rule_protocol, "UDP", "UDP");
+                        });
+                    });
+                },
+                RuleType::Address => {
+                    ui.horizontal(|ui| {
+                        ui.label("IP地址:");
+                        ui.text_edit_singleline(&mut self.new_rule_address);
+                    });
+                },
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("动作:");
+                egui::ComboBox::from_label("").selected_text(match self.new_rule_action {
+                    RuleAction::Allow => "允许",
+                    RuleAction::Block => "阻止",
+                }).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.new_rule_action, RuleAction::Allow, "允许");
+                    ui.selectable_value(&mut self.new_rule_action, RuleAction::Block, "阻止");
+                });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("描述:");
+                ui.text_edit_multiline(&mut self.new_rule_description);
+            });
             
             ui.horizontal(|ui| {
                 if ui.button("取消").clicked() {
@@ -412,28 +508,42 @@ impl FirewallModule {
                         ui.label(RichText::new("操作").strong());
                         ui.end_row();
                         
+                        // 克隆应用程序列表以避免借用冲突
+                        let running_applications_clone = self.running_applications.clone();
                         // 应用程序列表
-                        for (app_path, allowed) in &mut self.running_applications {
+                        for (app_path, allowed) in &running_applications_clone {
                             ui.label(app_path);
                             
                             let status_text = if *allowed { RichText::new("允许").color(Color32::GREEN) } else { RichText::new("阻止").color(Color32::RED) };
                             ui.label(status_text);
                             
+                            // 克隆数据以在闭包中使用
+                            let app_path_clone = app_path.clone();
+                            let allowed_clone = *allowed;
+                            let next_rule_id = self.next_rule_id;
+                            
                             ui.horizontal(|ui| {
-                                if ui.button(if *allowed { "阻止" } else { "允许" }).clicked() {
-                                    *allowed = !*allowed;
-                                    // 在实际应用中，这里会更新防火墙规则
+                                if ui.button(if allowed_clone { "阻止" } else { "允许" }).clicked() {
+                                    if let Some(allowed_mut) = self.running_applications.get_mut(&app_path_clone) {
+                                        *allowed_mut = !allowed_clone;
+                                        if let Ok(mut logger) = self.logger.lock() {
+                                            logger.info("防火墙", &format!("{} 的网络访问已更改为 {}", app_path_clone, if *allowed_mut { "允许" } else { "阻止" }));
+                                        }
+                                    }
+                                    if let Some(allowed_mut) = self.running_applications.get_mut(&app_path_clone) {
+                                        *allowed_mut = !allowed_clone;
+                                    }
                                 }
                                 
                                 if ui.button("添加规则").clicked() {
                                     // 为该应用程序创建新规则
                                     let mut new_rule = FirewallRule::new(
-                                        self.next_rule_id,
-                                        &app_path.split("\\").last().unwrap_or("未知应用"),
+                                        next_rule_id,
+                                        &app_path_clone.split("\\").last().unwrap_or("未知应用"),
                                         RuleType::Application
                                     );
-                                    new_rule.application_path = Some(app_path.clone());
-                                    new_rule.action = if *allowed { RuleAction::Allow } else { RuleAction::Block };
+                                    new_rule.application_path = Some(app_path_clone);
+                                    new_rule.action = if allowed_clone { RuleAction::Allow } else { RuleAction::Block };
                                     self.add_rule(new_rule);
                                 }
                             });

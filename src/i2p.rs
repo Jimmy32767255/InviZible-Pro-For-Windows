@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, RichText, Ui, Grid, ScrollArea};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
-use crate::logger::{Logger, LogLevel};
+use crate::logger::Logger;
 use crate::app::I2P_COLOR;
 
 // I2P隧道类型
@@ -131,11 +131,13 @@ impl I2PModule {
     }
     
     // 删除隧道
+    // 删除隧道方法保持原样
     fn remove_tunnel(&mut self, id: usize) {
-        if let Some(index) = self.tunnels.iter().position(|t| t.id == id) {
-            let tunnel = &self.tunnels[index];
+        let tunnel_index = self.tunnels.iter().position(|t| t.id == id);
+        if let Some(index) = tunnel_index {
+            let tunnel_name = self.tunnels[index].name.clone();
             if let Ok(mut logger) = self.logger.lock() {
-                logger.info("I2P", &format!("删除隧道: {}", tunnel.name));
+                logger.info("I2P", &format!("删除隧道: {}", tunnel_name));
             }
             self.tunnels.remove(index);
             if self.selected_tunnel == Some(id) {
@@ -144,51 +146,7 @@ impl I2PModule {
         }
     }
     
-    // 启用/禁用I2P
-    fn toggle_i2p(&mut self) {
-        self.enabled = !self.enabled;
-        if let Ok(mut logger) = self.logger.lock() {
-            logger.info("I2P", &format!("I2P已{}", if self.enabled { "启用" } else { "禁用" }));
-        }
-        
-        // 更新连接状态
-        self.connection_status = if self.enabled { "正在连接..." } else { "未连接" }.to_string();
-        
-        // 在实际应用中，这里会启动或停止I2P服务
-        // 模拟连接过程
-        if self.enabled {
-            // 在实际应用中，这里会有异步连接逻辑
-            self.connection_status = "已连接".to_string();
-            // 模拟带宽数据
-            self.bandwidth_in = 128;
-            self.bandwidth_out = 64;
-        } else {
-            self.bandwidth_in = 0;
-            self.bandwidth_out = 0;
-        }
-    }
-    
-    // 启用/禁用隧道
-    fn toggle_tunnel(&mut self, id: usize) {
-        if let Some(tunnel) = self.tunnels.iter_mut().find(|t| t.id == id) {
-            tunnel.enabled = !tunnel.enabled;
-            if let Ok(mut logger) = self.logger.lock() {
-                logger.info("I2P", &format!("隧道 '{}' 已{}", tunnel.name, if tunnel.enabled { "启用" } else { "禁用" }));
-            }
-        }
-    }
-    
-    // 打开I2P控制台
-    fn open_i2p_console(&self) {
-        if let Ok(mut logger) = self.logger.lock() {
-            logger.info("I2P", "打开I2P控制台");
-        }
-        
-        // 在实际应用中，这里会使用系统默认浏览器打开I2P控制台
-        // 例如：http://127.0.0.1:7657/
-    }
-    
-    // 渲染UI
+    // 将for循环移到UI方法内的正确位置
     pub fn ui(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("I2P网络").color(I2P_COLOR).strong());
@@ -266,18 +224,20 @@ impl I2PModule {
                     ui.label(RichText::new("操作").strong());
                     ui.end_row();
                     
-                    // 隧道列表
-                    for tunnel in &self.tunnels {
-                        // 启用/禁用复选框
+                    // 修改后的隧道列表循环
+                    for tunnel in &self.tunnels {  // 使用不可变借用
+                        let tunnel_id = tunnel.id;
                         let mut enabled = tunnel.enabled;
-                        if ui.checkbox(&mut enabled, "").changed() {
-                            self.toggle_tunnel(tunnel.id);
-                        }
+                        let tunnel_name = tunnel.name.clone();
                         
-                        // 隧道名称
-                        let tunnel_text = RichText::new(&tunnel.name);
-                        if ui.selectable_label(self.selected_tunnel == Some(tunnel.id), tunnel_text).clicked() {
-                            self.selected_tunnel = Some(tunnel.id);
+                        // 启用/禁用复选框
+                        ui.checkbox(&mut enabled, "")
+                            .on_hover_text("启用/禁用该隧道")
+                            .changed();
+                        
+                        // 隧道名称选择
+                        if ui.selectable_label(self.selected_tunnel == Some(tunnel_id), &tunnel.name).clicked() {
+                            self.selected_tunnel = Some(tunnel_id);
                         }
                         
                         // 隧道类型
@@ -293,12 +253,11 @@ impl I2PModule {
                         // 操作按钮
                         ui.horizontal(|ui| {
                             if ui.button("编辑").clicked() {
-                                // 编辑隧道逻辑
-                                self.selected_tunnel = Some(tunnel.id);
+                                self.selected_tunnel = Some(tunnel_id);
                                 self.edit_mode = true;
                             }
                             if ui.button("删除").clicked() {
-                                self.remove_tunnel(tunnel.id);
+                                self.remove_tunnel(tunnel_id);
                             }
                         });
                         
@@ -345,8 +304,71 @@ impl I2PModule {
         
         // 添加/编辑隧道对话框
         if self.edit_mode {
-            // 在实际应用中，这里会使用一个模态对话框
-            // 简化起见，这里直接在主界面上显示编辑区域
+            // 使用模态对话框进行隧道编辑
+            egui::Window::new(if self.selected_tunnel.is_some() { "编辑隧道" } else { "添加隧道" })
+                .open(&mut self.edit_mode)
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("隧道名称:");
+                        if ui.text_edit_singleline(&mut self.new_tunnel_name).changed() {
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("隧道类型:");
+                        egui::ComboBox::from_id_source("tunnel_type_combo")
+                            .selected_text(match self.new_tunnel_type {
+                                TunnelType::Client => "客户端",
+                                TunnelType::Server => "服务端",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.new_tunnel_type, TunnelType::Client, "客户端");
+                                ui.selectable_value(&mut self.new_tunnel_type, TunnelType::Server, "服务端");
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("本地端口:");
+                        let mut tunnel_port = self.new_tunnel_port.to_string();
+                        if ui.text_edit_singleline(&mut tunnel_port).changed() {
+                            if let Ok(port) = tunnel_port.parse::<u16>() {
+                                self.new_tunnel_port = port;
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("目标地址:");
+                        if ui.text_edit_singleline(&mut self.new_tunnel_destination).changed() {
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        if ui.button("取消").clicked() {
+                            self.edit_mode = false;
+                            self.new_tunnel_name.clear();
+                            self.new_tunnel_destination.clear();
+                            self.new_tunnel_port = 0;
+                        }
+
+                        if ui.button("保存").clicked() {
+                            if !self.new_tunnel_name.is_empty() && !self.new_tunnel_destination.is_empty() && self.new_tunnel_port > 0 {
+                                let new_tunnel = I2PTunnel::new(
+                                    self.next_tunnel_id,
+                                    &self.new_tunnel_name,
+                                    self.new_tunnel_type.clone(),
+                                    self.new_tunnel_port,
+                                    &self.new_tunnel_destination
+                                );
+                                self.add_tunnel(new_tunnel);
+                                self.new_tunnel_name.clear();
+                                self.new_tunnel_destination.clear();
+                                self.new_tunnel_port = 0;
+                                self.edit_mode = false;
+                            }
+                        }
+                    });
+                });
             ui.separator();
             ui.heading(if self.selected_tunnel.is_some() { "编辑隧道" } else { "添加隧道" });
             

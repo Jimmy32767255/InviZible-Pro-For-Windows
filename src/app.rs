@@ -7,15 +7,17 @@ use crate::tor::TorModule;
 use crate::dnscrypt::DnsCryptModule;
 use crate::i2p::I2PModule;
 use crate::proxy::ProxyModule;
+use crate::vpn::VpnModule;
 use crate::logger::Logger;
 
 // 定义模块颜色
-pub const TOR_COLOR: Color32 = Color32::from_rgb(89, 49, 107); // #59316B
+pub const TOR_COLOR: Color32 = Color32::from_rgb(89, 49, 107); // 洋葱色
 pub const DNS_COLOR: Color32 = Color32::from_rgb(0, 92, 185);  // 蓝色
 pub const I2P_COLOR: Color32 = Color32::from_rgb(102, 51, 153); // 紫色
 pub const FIREWALL_COLOR: Color32 = Color32::from_rgb(220, 53, 69); // 红色
-pub const SETTINGS_COLOR: Color32 = Color32::from_rgb(108, 117, 125); // 灰色
+pub const SETTINGS_COLOR: Color32 = Color32::from_rgb(140, 192, 170); // 青色
 pub const LOG_COLOR: Color32 = Color32::from_rgb(108, 117, 125); // 灰色
+pub const VPN_COLOR: Color32 = Color32::from_rgb(0, 150, 136); // 青绿色
 
 // 定义应用程序的标签页
 #[derive(PartialEq)]
@@ -25,6 +27,7 @@ enum Tab {
     I2P,
     Firewall,
     Proxy,
+    VPN,
     Logs,
     Settings,
 }
@@ -37,18 +40,22 @@ pub struct InviZibleApp {
     i2p_module: I2PModule,
     firewall_module: FirewallModule,
     proxy_module: ProxyModule,
+    vpn_module: VpnModule,
     logger: Arc<Mutex<Logger>>,
 }
 
 impl InviZibleApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // 设置默认字体和样式
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.text_styles = egui::TextStyle::default_text_styles();
+        let style = (*cc.egui_ctx.style()).clone(); // 移除mut
+        // 使用默认文本样式，不再调用已弃用的default_text_styles方法
         cc.egui_ctx.set_style(style);
         
-        // 创建日志记录器
+        // 创建日志记录器并记录初始化日志
         let logger = Arc::new(Mutex::new(Logger::new()));
+        if let Ok(mut log) = logger.lock() {
+            log.info("App", "InviZible Pro已启动");
+        }
         
         // 创建应用程序实例
         Self {
@@ -58,6 +65,7 @@ impl InviZibleApp {
             i2p_module: I2PModule::new(Arc::clone(&logger)),
             firewall_module: FirewallModule::new(Arc::clone(&logger)),
             proxy_module: ProxyModule::new(Arc::clone(&logger)),
+            vpn_module: VpnModule::new(Arc::clone(&logger)),
             logger,
         }
     }
@@ -73,6 +81,7 @@ impl InviZibleApp {
                 self.tab_button(ui, Tab::I2P, "I2P", I2P_COLOR);
                 self.tab_button(ui, Tab::Firewall, "防火墙", FIREWALL_COLOR);
                 self.tab_button(ui, Tab::Proxy, "代理", SETTINGS_COLOR);
+                self.tab_button(ui, Tab::VPN, "VPN", VPN_COLOR);
                 self.tab_button(ui, Tab::Logs, "日志", LOG_COLOR);
                 self.tab_button(ui, Tab::Settings, "设置", SETTINGS_COLOR);
             });
@@ -83,7 +92,9 @@ impl InviZibleApp {
     fn tab_button(&mut self, ui: &mut Ui, tab: Tab, name: &str, color: Color32) {
         let selected = self.current_tab == tab;
         let text = RichText::new(name).color(if selected { color } else { Color32::GRAY });
-        let button = egui::Button::new(text).selected(selected);
+        // 使用fill方法代替selected方法
+        let button = egui::Button::new(text)
+            .fill(if selected { ui.style().visuals.selection.bg_fill } else { ui.style().visuals.widgets.inactive.bg_fill });
         
         if ui.add(button).clicked() {
             self.current_tab = tab;
@@ -98,6 +109,7 @@ impl InviZibleApp {
             Tab::I2P => self.i2p_module.ui(ui),
             Tab::Firewall => self.firewall_module.ui(ui),
             Tab::Proxy => self.proxy_module.ui(ui),
+            Tab::VPN => self.vpn_module.ui(ui),
             Tab::Logs => {
                 if let Ok(logger) = self.logger.lock() {
                     logger.ui(ui);

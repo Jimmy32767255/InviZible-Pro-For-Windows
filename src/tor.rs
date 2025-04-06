@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, RichText, Ui, Grid, ScrollArea};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
-use crate::logger::{Logger, LogLevel};
+use crate::logger::Logger;
 use crate::app::TOR_COLOR;
 
 // Tor网桥类型
@@ -145,28 +145,61 @@ impl TorModule {
     
     // 启用/禁用Tor
     fn toggle_tor(&mut self) {
-        self.enabled = !self.enabled;
-        if let Ok(mut logger) = self.logger.lock() {
-            logger.info("Tor", &format!("Tor已{}", if self.enabled { "启用" } else { "禁用" }));
+        // 先获取当前状态的副本，避免同时借用
+        let new_enabled = !self.enabled;
+        let status_message = if new_enabled { "启用" } else { "禁用" };
+        
+        // 记录日志
+        {
+            // 使用单独的作用域限制logger的借用范围
+            if let Ok(mut logger) = self.logger.lock() {
+                logger.info("Tor", &format!("Tor已{}", status_message));
+            }
         }
         
-        // 更新连接状态
-        self.connection_status = if self.enabled { "正在连接..." } else { "未连接" }.to_string();
+        // 更新状态
+        self.enabled = new_enabled;
+        self.connection_status = if new_enabled { "正在连接..." } else { "未连接" }.to_string();
         
-        // 在实际应用中，这里会启动或停止Tor服务
+        // 启动或停止Tor服务
+        let tor_process = if new_enabled {
+            Some(std::process::Command::new("tor")
+                .arg("--RunAsDaemon")
+                .arg("1")
+                .spawn()?)
+        } else {
+            if let Some(mut process) = self.tor_process.take() {
+                process.kill()?;
+            }
+            None
+        };
+        self.tor_process = tor_process;
         // 模拟连接过程
-        if self.enabled {
-            // 在实际应用中，这里会有异步连接逻辑
+        if new_enabled {
+            // 异步连接逻辑
+            let tor_control_port = 9051;
+            let tor_control = torut::control::TorControlConnection::connect("127.0.0.1", tor_control_port).await?;
+            tor_control.authenticate("").await?;
             self.connection_status = "已连接".to_string();
         }
     }
     
     // 启用/禁用网桥
     fn toggle_bridge(&mut self, id: usize) {
-        if let Some(bridge) = self.bridges.iter_mut().find(|b| b.id == id) {
-            bridge.enabled = !bridge.enabled;
+        // 先查找网桥并获取必要信息，避免同时借用
+        let bridge_info = self.bridges.iter_mut()
+            .find(|b| b.id == id)
+            .map(|bridge| {
+                let name = bridge.name.clone();
+                let new_state = !bridge.enabled;
+                bridge.enabled = new_state;
+                (name, new_state)
+            });
+        
+        // 如果找到了网桥，记录日志
+        if let Some((name, enabled)) = bridge_info {
             if let Ok(mut logger) = self.logger.lock() {
-                logger.info("Tor", &format!("网桥 '{}' 已{}", bridge.name, if bridge.enabled { "启用" } else { "禁用" }));
+                logger.info("Tor", &format!("网桥 '{}' 已{}", name, if enabled { "启用" } else { "禁用" }));
             }
         }
     }
@@ -189,8 +222,17 @@ impl TorModule {
             logger.info("Tor", "打开Tor项目捐赠页面");
         }
         
-        // 在实际应用中，这里会使用系统默认浏览器打开捐赠页面
-        // 例如：https://donate.torproject.org/
+        // 使用系统默认浏览器打开捐赠页面
+        if let Err(e) = webbrowser::open("https://donate.torproject.org/") {
+            if let Ok(mut logger) = self.logger.lock() {
+                logger.error("Tor", &format!("无法打开捐赠页面: {}", e));
+            }
+        }
+    }
+    
+    // 获取当前连接状态的副本
+    fn get_connection_status(&self) -> String {
+        self.connection_status.clone()
     }
     
     // 渲染UI
@@ -245,7 +287,23 @@ impl TorModule {
                     if ui.selectable_label(true, node_type_text).clicked() {
                         if self.node_type == NodeType::Relay {
                             // 显示警告对话框
-                            // 在实际应用中，这里会使用一个模态对话框
+                            let response = egui::Window::new("警告")
+                                .open(&mut self.show_warning)
+                                .show(ui.ctx(), |ui| {
+                                    ui.label("运行出口节点可能会带来法律风险，因为其他用户的流量将通过您的网络连接离开Tor网络。");
+                                    ui.horizontal(|ui| {
+                                        if ui.button("确认").clicked() {
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                });
+                            if let Some(response) = response {
+                                if response.inner {
+                                    self.toggle_node_type();
+                                }
+                            }
                             ui.label(RichText::new("警告: 运行出口节点可能会带来法律风险，因为其他用户的流量将通过您的网络连接离开Tor网络。").color(Color32::RED));
                             // 如果用户确认，则切换节点类型
                             self.toggle_node_type();
@@ -289,11 +347,14 @@ impl TorModule {
                     ui.end_row();
                     
                     // 网桥列表
-                    for bridge in &self.bridges {
+                    // 克隆网桥列表以避免借用冲突
+                    let bridges_clone = self.bridges.clone();
+                    for bridge in &bridges_clone {
                         // 启用/禁用复选框
                         let mut enabled = bridge.enabled;
+                        let bridge_id = bridge.id; // 先获取ID避免借用冲突
                         if ui.checkbox(&mut enabled, "").changed() {
-                            self.toggle_bridge(bridge.id);
+                            self.toggle_bridge(bridge_id);
                         }
                         
                         // 网桥名称
@@ -312,14 +373,15 @@ impl TorModule {
                         ui.label(type_text);
                         
                         // 操作按钮
+                        let bridge_id = bridge.id; // 再次获取ID避免闭包中的借用冲突
                         ui.horizontal(|ui| {
                             if ui.button("编辑").clicked() {
                                 // 编辑网桥逻辑
-                                self.selected_bridge = Some(bridge.id);
+                                self.selected_bridge = Some(bridge_id);
                                 self.edit_mode = true;
                             }
                             if ui.button("删除").clicked() {
-                                self.remove_bridge(bridge.id);
+                                self.remove_bridge(bridge_id);
                             }
                         });
                         
@@ -360,8 +422,58 @@ impl TorModule {
         
         // 添加/编辑网桥对话框
         if self.edit_mode {
-            // 在实际应用中，这里会使用一个模态对话框
-            // 简化起见，这里直接在主界面上显示编辑区域
+            // 使用模态对话框编辑网桥
+            let response = egui::Window::new(if self.selected_bridge.is_some() { "编辑网桥" } else { "添加网桥" })
+                .open(&mut self.edit_mode)
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("网桥名称:");
+                        ui.text_edit_singleline(&mut self.new_bridge_name);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("网桥类型:");
+                        egui::ComboBox::from_id_source("bridge_type_combo")
+                            .selected_text(match self.new_bridge_type {
+                                BridgeType::Vanilla => "Vanilla",
+                                BridgeType::Obfs4 => "Obfs4",
+                                BridgeType::Snowflake => "Snowflake",
+                                BridgeType::Meek => "Meek",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.new_bridge_type, BridgeType::Vanilla, "Vanilla");
+                                ui.selectable_value(&mut self.new_bridge_type, BridgeType::Obfs4, "Obfs4");
+                                ui.selectable_value(&mut self.new_bridge_type, BridgeType::Snowflake, "Snowflake");
+                                ui.selectable_value(&mut self.new_bridge_type, BridgeType::Meek, "Meek");
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("网桥地址:");
+                        ui.text_edit_singleline(&mut self.new_bridge_address);
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("取消").clicked() {
+                            false
+                        } else if ui.button("保存").clicked() {
+                            true
+                        }
+                    })
+                });
+            if let Some(response) = response {
+                if response.inner {
+                    if !self.new_bridge_name.is_empty() && !self.new_bridge_address.is_empty() {
+                        let new_bridge = TorBridge::new(
+                            self.next_bridge_id,
+                            &self.new_bridge_name,
+                            self.new_bridge_type.clone(),
+                            &self.new_bridge_address
+                        );
+                        self.add_bridge(new_bridge);
+                        self.new_bridge_name.clear();
+                        self.new_bridge_address.clear();
+                        self.edit_mode = false;
+                    }
+                }
+            }
             ui.separator();
             ui.heading(if self.selected_bridge.is_some() { "编辑网桥" } else { "添加网桥" });
             

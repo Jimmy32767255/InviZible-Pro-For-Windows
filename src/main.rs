@@ -1,6 +1,5 @@
 use eframe::egui;
 use log::{info, LevelFilter};
-use std::sync::{Arc, Mutex};
 
 mod app;
 mod firewall;
@@ -8,6 +7,7 @@ mod tor;
 mod dnscrypt;
 mod i2p;
 mod proxy;
+mod vpn;
 mod logger;
 mod utils;
 

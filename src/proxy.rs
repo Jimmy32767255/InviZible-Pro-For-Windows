@@ -1,8 +1,8 @@
-use eframe::egui::{self, Color32, RichText, Ui, Grid, ScrollArea};
+use eframe::egui::{self, Color32, RichText, Ui, Grid};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
-use crate::logger::{Logger, LogLevel};
+use crate::logger::Logger;
 use crate::app::SETTINGS_COLOR;
 
 // 代理协议类型
@@ -81,7 +81,18 @@ impl ProxyModule {
             logger.info("代理", &format!("代理服务已启动 ({}:{})", self.config.listen_address, self.config.listen_port));
         }
         
-        // 在实际应用中，这里会启动代理服务器
+        // 启动代理服务器
+        let proxy = match self.config.protocol {
+            ProxyProtocol::HTTP => {
+                let proxy = HttpProxy::new(self.config.listen_address.clone(), self.config.listen_port);
+                proxy.start()
+            }
+            ProxyProtocol::SOCKS5 => {
+                let proxy = Socks5Proxy::new(self.config.listen_address.clone(), self.config.listen_port);
+                proxy.start()
+            }
+        };
+        self.proxy = Some(proxy);
     }
     
     // 停止代理服务
@@ -93,7 +104,10 @@ impl ProxyModule {
             logger.info("代理", "代理服务已停止");
         }
         
-        // 在实际应用中，这里会停止代理服务器
+        // 停止代理服务器
+        if let Some(proxy) = self.proxy.take() {
+            proxy.stop();
+        }
     }
     
     // 检查端口冲突
@@ -104,9 +118,8 @@ impl ProxyModule {
             logger.info("代理", &format!("正在检查端口 {} 是否可用...", self.config.listen_port));
         }
         
-        // 在实际应用中，这里会使用端口扫描器检查端口是否被占用
-        // 模拟检查过程
-        let port_in_use = false; // 假设端口未被占用
+        // 使用端口扫描器检查端口是否被占用
+        let port_in_use = port_scanner::scan_port(self.config.listen_port);
         
         self.port_conflict = port_in_use;
         self.port_checking = false;
@@ -266,7 +279,9 @@ impl ProxyModule {
                 ui.label("代理地址:");
                 ui.monospace(&proxy_url);
                 if ui.button("复制").clicked() {
-                    // 在实际应用中，这里会将代理地址复制到剪贴板
+                    // 将代理地址复制到剪贴板
+                    let mut clipboard = Clipboard::new().unwrap();
+                    clipboard.set_text(proxy_url).unwrap();
                     if let Ok(mut logger) = self.logger.lock() {
                         logger.info("代理", "代理地址已复制到剪贴板");
                     }

@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, Context};
-use log::{info, error, warn};
+use log::info;
 
 // 检查端口是否被占用
 pub fn is_port_in_use(host: &str, port: u16) -> bool {
@@ -67,15 +67,21 @@ pub fn get_app_data_dir() -> Result<String> {
 pub fn is_running_as_admin() -> bool {
     #[cfg(target_os = "windows")]
     {
-        use winapi::um::securitybaseapi::AllocateAndInitializeSid;
-        use winapi::um::securitybaseapi::CheckTokenMembership;
-        use winapi::um::winnt::{SECURITY_NT_AUTHORITY, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS};
+        use winapi::um::winnt::{SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS};
+        use winapi::shared::minwindef::BOOL;
+        use winapi::um::winnt::PSID;
+        use winapi::um::securitybaseapi::{AllocateAndInitializeSid, CheckTokenMembership, FreeSid};
+        use winapi::um::winnt::SID_IDENTIFIER_AUTHORITY;
         use std::ptr::null_mut;
         
         unsafe {
-            let mut authority = SECURITY_NT_AUTHORITY;
-            let mut sid = null_mut();
+            let mut authority: SID_IDENTIFIER_AUTHORITY = std::mem::zeroed();
+            // SECURITY_NT_AUTHORITY 的值为 {0, 0, 0, 0, 0, 5}
+            authority.Value[5] = 5;
             
+            let mut sid: PSID = null_mut();
+            
+            // 分配并初始化SID
             let result = AllocateAndInitializeSid(
                 &mut authority,
                 2,
@@ -89,8 +95,13 @@ pub fn is_running_as_admin() -> bool {
                 return false;
             }
             
-            let mut is_member = 0;
-            let result = CheckTokenMembership(null_mut(), sid, &mut is_member);
+            // 确保在函数结束时释放SID
+            let sid_guard = scopeguard::guard(sid, |sid| {
+                FreeSid(sid);
+            });
+            
+            let mut is_member: BOOL = 0;
+            let result = CheckTokenMembership(null_mut(), *sid_guard, &mut is_member);
             
             if result == 0 {
                 return false;

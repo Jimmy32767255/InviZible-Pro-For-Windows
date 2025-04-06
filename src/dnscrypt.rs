@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, RichText, Ui, Grid, ScrollArea};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
-use crate::logger::{Logger, LogLevel};
+use crate::logger::Logger;
 use crate::app::DNS_COLOR;
 
 // DNSCrypt服务器结构
@@ -142,17 +142,23 @@ impl DnsCryptModule {
     
     // 启用/禁用DNSCrypt
     fn toggle_dnscrypt(&mut self) {
-        self.enabled = !self.enabled;
-        if let Ok(mut logger) = self.logger.lock() {
-            logger.info("DNSCrypt", &format!("DNSCrypt已{}", if self.enabled { "启用" } else { "禁用" }));
+        // 先获取当前状态的副本
+        let new_enabled = !self.enabled;
+        let status_message = if new_enabled { "启用" } else { "禁用" };
+        
+        // 记录日志
+        {
+            if let Ok(mut logger) = self.logger.lock() {
+                logger.info("DNSCrypt", &format!("DNSCrypt已{}", status_message));
+            }
         }
         
-        // 更新连接状态
-        self.connection_status = if self.enabled { "正在连接..." } else { "未连接" }.to_string();
+        // 更新状态
+        self.enabled = new_enabled;
+        self.connection_status = if new_enabled { "正在连接..." } else { "未连接" }.to_string();
         
         // 在实际应用中，这里会启动或停止DNSCrypt服务
-        // 模拟连接过程
-        if self.enabled {
+        if new_enabled {
             // 在实际应用中，这里会有异步连接逻辑
             self.connection_status = "已连接".to_string();
         }
@@ -160,10 +166,20 @@ impl DnsCryptModule {
     
     // 启用/禁用服务器
     fn toggle_server(&mut self, id: usize) {
-        if let Some(server) = self.servers.iter_mut().find(|s| s.id == id) {
-            server.enabled = !server.enabled;
+        // 先查找服务器并获取必要信息，避免同时借用
+        let server_info = self.servers.iter_mut()
+            .find(|s| s.id == id)
+            .map(|server| {
+                let name = server.name.clone();
+                let new_state = !server.enabled;
+                server.enabled = new_state;
+                (name, new_state)
+            });
+        
+        // 如果找到了服务器，记录日志
+        if let Some((name, enabled)) = server_info {
             if let Ok(mut logger) = self.logger.lock() {
-                logger.info("DNSCrypt", &format!("服务器 '{}' 已{}", server.name, if server.enabled { "启用" } else { "禁用" }));
+                logger.info("DNSCrypt", &format!("服务器 '{}' 已{}", name, if enabled { "启用" } else { "禁用" }));
             }
         }
     }
@@ -235,7 +251,8 @@ impl DnsCryptModule {
                     ui.end_row();
                     
                     // 服务器列表
-                    for server in &self.servers {
+                    let servers_copy = self.servers.clone();
+                    for (_index, server) in servers_copy.iter().enumerate() {
                         // 启用/禁用复选框
                         let mut enabled = server.enabled;
                         if ui.checkbox(&mut enabled, "").changed() {
@@ -257,15 +274,15 @@ impl DnsCryptModule {
                         // 无日志政策
                         ui.label(if server.no_logs { "✓" } else { "✗" });
                         
-                        // 操作按钮
+                        // 操作按钮（修复借用冲突）
+                        let server_id = server.id;
                         ui.horizontal(|ui| {
                             if ui.button("编辑").clicked() {
-                                // 编辑服务器逻辑
-                                self.selected_server = Some(server.id);
+                                self.selected_server = Some(server_id);
                                 self.edit_mode = true;
                             }
                             if ui.button("删除").clicked() {
-                                self.remove_server(server.id);
+                                self.remove_server(server_id);
                             }
                         });
                         
