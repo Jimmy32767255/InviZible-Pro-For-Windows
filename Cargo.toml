@@ -12,6 +12,10 @@ eframe = "0.22.0"
 egui_extras = "0.22.0"
 rfd = "0.11.0"
 
+# Tor utilities
+torut = "0.3.0"
+webbrowser = "0.5.5"
+
 # Network & Security
 tokio = { version = "1.28.0", features = ["full"] }
 tor-rtcompat = "0.29.0"

@@ -323,12 +323,12 @@ impl I2PModule {
                             if ui.button("删除").clicked() {
                                 self.remove_tunnel(tunnel_id_copy);
                             }
-                        });}
+                        });
                         
                         ui.end_row();
                     }
                 });
-        });
+            });
         
         // 隧道详情区域
         if let Some(tunnel_id) = self.selected_tunnel {

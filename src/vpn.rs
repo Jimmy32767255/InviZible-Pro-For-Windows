@@ -447,70 +447,71 @@ impl VpnModule {
         } else if url_str.starts_with("ss://") {
             // 解析Shadowsocks URL
             // 实现类似parse_vmess_url的功能
-            // 解析Shadowsocks URL
-let parts: Vec<&str> = url.split('@').collect();
-if parts.len() != 2 {
-    return Err("无效的Shadowsocks URL".to_string());
-}
-let method_password = parts[0];
-let server_port = parts[1];
-
-let mp: Vec<&str> = method_password.split(':').collect();
-if mp.len() != 2 {
-    return Err("无效的Shadowsocks加密方法或密码".to_string());
-}
-let encryption = mp[0];
-let password = mp[1];
-
-let sp: Vec<&str> = server_port.split(':').collect();
-if sp.len() != 2 {
-    return Err("无效的服务器地址或端口".to_string());
-}
-let server = sp[0];
-let port = match sp[1].parse::<u16>() {
-    Ok(p) => p,
-    Err(_) => return Err("无效的端口号".to_string()),
-};
-
-Ok(VpnConfig::new(
-    0,
-    "Shadowsocks配置",
-    VpnProtocol::Shadowsocks,
-    server,
-    port,
-    password,
-    encryption
-))
+            let parse_result = self.parse_shadowsocks_url(url_str);
+            match parse_result {
+                Ok(config) => {
+                    // 获取下一个ID并递增
+                    let next_id = self.next_config_id;
+                    self.next_config_id += 1;
+                    
+                    let config_with_id = VpnConfig::new(
+                        next_id,
+                        &config.name,
+                        config.protocol,
+                        &config.server,
+                        config.port,
+                        &config.uuid,
+                        &config.encryption
+                    );
+                    
+                    let logger_clone = self.logger.clone();
+                    // 记录日志
+                    {
+                        if let Ok(mut logger) = logger_clone.lock() {
+                            logger.info("VPN", &format!("添加新VPN配置: {}", config_with_id.name));
+                        }
+                    }
+                    
+                    // 添加配置
+                    self.configs.push(config_with_id);
+                    Ok(())
+                },
+                Err(e) => Err(e)
+            }
         } else if url_str.starts_with("trojan://") {
             // 解析Trojan URL
             // 实现类似parse_vmess_url的功能
-            // 解析Trojan URL
-let parts: Vec<&str> = url.split('@').collect();
-if parts.len() != 2 {
-    return Err("无效的Trojan URL".to_string());
-}
-let password = parts[0];
-let server_port = parts[1];
-
-let sp: Vec<&str> = server_port.split(':').collect();
-if sp.len() != 2 {
-    return Err("无效的服务器地址或端口".to_string());
-}
-let server = sp[0];
-let port = match sp[1].parse::<u16>() {
-    Ok(p) => p,
-    Err(_) => return Err("无效的端口号".to_string()),
-};
-
-Ok(VpnConfig::new(
-    0,
-    "Trojan配置",
-    VpnProtocol::Trojan,
-    server,
-    port,
-    password,
-    "auto"
-))
+            let parse_result = self.parse_trojan_url(url_str);
+            match parse_result {
+                Ok(config) => {
+                    // 获取下一个ID并递增
+                    let next_id = self.next_config_id;
+                    self.next_config_id += 1;
+                    
+                    let config_with_id = VpnConfig::new(
+                        next_id,
+                        &config.name,
+                        config.protocol,
+                        &config.server,
+                        config.port,
+                        &config.uuid,
+                        &config.encryption
+                    );
+                    
+                    let logger_clone = self.logger.clone();
+                    // 记录日志
+                    {
+                        if let Ok(mut logger) = logger_clone.lock() {
+                            logger.info("VPN", &format!("添加新VPN配置: {}", config_with_id.name));
+                        }
+                    }
+                    
+                    // 添加配置
+                    self.configs.push(config_with_id);
+                    Ok(())
+                },
+                Err(e) => Err(e)
+            }
         } else {
             Err("不支持的URL格式".to_string())
         }

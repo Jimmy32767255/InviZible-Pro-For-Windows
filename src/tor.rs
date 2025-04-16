@@ -328,6 +328,8 @@ impl TorModule {
                                 if response.inner {
                                     self.toggle_node_type();
                                 }
+                            } else {
+                                // 用户取消操作，不做任何改变
                             }
                             ui.label(RichText::new("警告: 运行出口节点可能会带来法律风险，因为其他用户的流量将通过您的网络连接离开Tor网络。").color(Color32::RED));
                             // 如果用户确认，则切换节点类型

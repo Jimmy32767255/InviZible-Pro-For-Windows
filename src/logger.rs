@@ -53,6 +53,7 @@ impl LogEntry {
 }
 
 // 日志系统结构
+#[derive(Clone)]
 pub struct Logger {
     logs: VecDeque<LogEntry>,
     max_logs: usize,
@@ -106,7 +107,7 @@ impl Logger {
     }
     
     // 渲染日志UI
-    pub fn ui(&self, ui: &mut Ui) {
+    pub fn ui(&mut self, ui: &mut Ui) {
         ui.heading("系统日志");
         ui.separator();
         
@@ -119,21 +120,27 @@ impl Logger {
                     Some(LogLevel::Warning) => "WARN",
                     Some(LogLevel::Error) => "ERROR",
                     Some(LogLevel::Debug) => "DEBUG",
-                    none => "全部",
+                    _none => "全部",
                 })
                 .show_ui(ui, |ui| {
                     if ui.selectable_value(&mut self.filter_level, None, "全部").clicked() {
                         self.filter_level = None;
                     }
                     for level in [LogLevel::Info, LogLevel::Warning, LogLevel::Error, LogLevel::Debug] {
-                        if ui.selectable_value(&mut self.filter_level, Some(level), level.str()).clicked() {
+                        let level_str = match level {
+                            LogLevel::Info => "INFO",
+                            LogLevel::Warning => "WARN",
+                            LogLevel::Error => "ERROR",
+                            LogLevel::Debug => "DEBUG",
+                        };
+                        if ui.selectable_value(&mut self.filter_level, Some(level), level_str).clicked() {
                             self.filter_level = Some(level);
                         }
                     }
                 });
 
             // 模块过滤
-            ui.add(egui::TextEdit::singleline(&mut self.filter_module.get_or_insert_with(String::new))
+            ui.add(egui::TextEdit::singleline(self.filter_module.get_or_insert_with(String::new))
                 .hint_text("过滤模块"));
 
             ui.add_space(10.0);
