@@ -146,6 +146,56 @@ impl I2PModule {
         }
     }
     
+    // 启用/禁用I2P
+    fn toggle_i2p(&mut self) {
+        // 先获取当前状态的副本，避免同时借用
+        let new_enabled = !self.enabled;
+        let status_message = if new_enabled { "启用" } else { "禁用" };
+        
+        // 记录日志
+        {
+            // 使用单独的作用域限制logger的借用范围
+            if let Ok(mut logger) = self.logger.lock() {
+                logger.info("I2P", &format!("I2P已{}", status_message));
+            }
+        }
+        
+        // 更新状态
+        self.enabled = new_enabled;
+        self.connection_status = if new_enabled { "正在连接..." } else { "未连接" }.to_string();
+        
+        // 在实际应用中，这里会启动或停止I2P服务
+        if new_enabled {
+            // 在实际应用中，这里会有异步连接逻辑
+            // 模拟连接成功
+            self.connection_status = "已连接".to_string();
+            // 模拟带宽数据
+            self.bandwidth_in = 128;
+            self.bandwidth_out = 64;
+        } else {
+            // 重置带宽数据
+            self.bandwidth_in = 0;
+            self.bandwidth_out = 0;
+        }
+    }
+    
+    // 打开I2P控制台
+    fn open_i2p_console(&mut self) {
+        if let Ok(mut logger) = self.logger.lock() {
+            logger.info("I2P", "正在打开I2P控制台");
+        }
+        
+        // 在实际应用中，这里会打开I2P控制台网页
+        // 例如使用webbrowser库打开http://127.0.0.1:7657/
+        if let Err(e) = std::process::Command::new("cmd")
+            .args(["/c", "start", "http://127.0.0.1:7657/"])
+            .spawn() {
+            if let Ok(mut logger) = self.logger.lock() {
+                logger.error("I2P", &format!("无法打开I2P控制台: {}", e));
+            }
+        }
+    }
+    
     // 将for循环移到UI方法内的正确位置
     pub fn ui(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
@@ -225,41 +275,55 @@ impl I2PModule {
                     ui.end_row();
                     
                     // 修改后的隧道列表循环
-                    for tunnel in &self.tunnels {  // 使用不可变借用
-                        let tunnel_id = tunnel.id;
-                        let mut enabled = tunnel.enabled;
-                        let tunnel_name = tunnel.name.clone();
-                        
+                    // 先收集所有需要的隧道信息，避免在循环中借用self
+                    let tunnels_info: Vec<_> = self.tunnels.iter().map(|tunnel| {
+                        (
+                            tunnel.id,
+                            tunnel.enabled,
+                            tunnel.name.clone(),
+                            tunnel.tunnel_type.clone(),
+                            tunnel.local_port,
+                            self.selected_tunnel == Some(tunnel.id)
+                        )
+                    }).collect();
+                    
+                    for (tunnel_id, mut enabled, tunnel_name, tunnel_type, local_port, is_selected) in tunnels_info {
                         // 启用/禁用复选框
-                        ui.checkbox(&mut enabled, "")
+                        if ui.checkbox(&mut enabled, "")
                             .on_hover_text("启用/禁用该隧道")
-                            .changed();
+                            .changed() {
+                            // 在实际应用中，这里应该更新隧道的启用状态
+                            if let Some(tunnel) = self.tunnels.iter_mut().find(|t| t.id == tunnel_id) {
+                                tunnel.enabled = enabled;
+                            }
+                        }
                         
                         // 隧道名称选择
-                        if ui.selectable_label(self.selected_tunnel == Some(tunnel_id), &tunnel.name).clicked() {
+                        if ui.selectable_label(is_selected, &tunnel_name).clicked() {
                             self.selected_tunnel = Some(tunnel_id);
                         }
                         
                         // 隧道类型
-                        let type_text = match tunnel.tunnel_type {
+                        let type_text = match tunnel_type {
                             TunnelType::Client => "客户端",
                             TunnelType::Server => "服务端",
                         };
                         ui.label(type_text);
                         
                         // 本地端口
-                        ui.label(tunnel.local_port.to_string());
+                        ui.label(local_port.to_string());
                         
                         // 操作按钮
+                        let tunnel_id_copy = tunnel_id; // 创建一个副本用于闭包
                         ui.horizontal(|ui| {
                             if ui.button("编辑").clicked() {
-                                self.selected_tunnel = Some(tunnel_id);
+                                self.selected_tunnel = Some(tunnel_id_copy);
                                 self.edit_mode = true;
                             }
                             if ui.button("删除").clicked() {
-                                self.remove_tunnel(tunnel_id);
+                                self.remove_tunnel(tunnel_id_copy);
                             }
-                        });
+                        });}
                         
                         ui.end_row();
                     }
@@ -304,139 +368,109 @@ impl I2PModule {
         
         // 添加/编辑隧道对话框
         if self.edit_mode {
+            // 提前获取所需数据，避免在闭包中直接借用self
+            let is_edit_mode = self.edit_mode;
+            let has_selected_tunnel = self.selected_tunnel.is_some();
+            let window_title = if has_selected_tunnel { "编辑隧道" } else { "添加隧道" };
+            
+            // 创建可变引用的副本，以便在闭包中使用
+            let mut new_tunnel_name = self.new_tunnel_name.clone();
+            let mut new_tunnel_type = self.new_tunnel_type.clone();
+            let mut new_tunnel_port = self.new_tunnel_port;
+            let mut new_tunnel_destination = self.new_tunnel_destination.clone();
+            let next_tunnel_id = self.next_tunnel_id;
+            
             // 使用模态对话框进行隧道编辑
-            egui::Window::new(if self.selected_tunnel.is_some() { "编辑隧道" } else { "添加隧道" })
-                .open(&mut self.edit_mode)
+            let mut still_open = is_edit_mode;
+            egui::Window::new(window_title)
+                .open(&mut still_open)
                 .show(ui.ctx(), |ui| {
                     ui.horizontal(|ui| {
                         ui.label("隧道名称:");
-                        if ui.text_edit_singleline(&mut self.new_tunnel_name).changed() {
-                        }
+                        ui.text_edit_singleline(&mut new_tunnel_name);
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("隧道类型:");
                         egui::ComboBox::from_id_source("tunnel_type_combo")
-                            .selected_text(match self.new_tunnel_type {
+                            .selected_text(match new_tunnel_type {
                                 TunnelType::Client => "客户端",
                                 TunnelType::Server => "服务端",
                             })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.new_tunnel_type, TunnelType::Client, "客户端");
-                                ui.selectable_value(&mut self.new_tunnel_type, TunnelType::Server, "服务端");
+                                ui.selectable_value(&mut new_tunnel_type, TunnelType::Client, "客户端");
+                                ui.selectable_value(&mut new_tunnel_type, TunnelType::Server, "服务端");
                             });
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("本地端口:");
-                        let mut tunnel_port = self.new_tunnel_port.to_string();
+                        let mut tunnel_port = new_tunnel_port.to_string();
                         if ui.text_edit_singleline(&mut tunnel_port).changed() {
                             if let Ok(port) = tunnel_port.parse::<u16>() {
-                                self.new_tunnel_port = port;
+                                new_tunnel_port = port;
                             }
                         }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("目标地址:");
-                        if ui.text_edit_singleline(&mut self.new_tunnel_destination).changed() {
-                        }
+                        ui.text_edit_singleline(&mut new_tunnel_destination);
                     });
 
+                    // 保存用户操作的结果
+                    let mut save_clicked = false;
+                    let mut cancel_clicked = false;
+                    
                     ui.horizontal(|ui| {
                         if ui.button("取消").clicked() {
-                            self.edit_mode = false;
-                            self.new_tunnel_name.clear();
-                            self.new_tunnel_destination.clear();
-                            self.new_tunnel_port = 0;
+                            cancel_clicked = true;
                         }
 
                         if ui.button("保存").clicked() {
-                            if !self.new_tunnel_name.is_empty() && !self.new_tunnel_destination.is_empty() && self.new_tunnel_port > 0 {
-                                let new_tunnel = I2PTunnel::new(
-                                    self.next_tunnel_id,
-                                    &self.new_tunnel_name,
-                                    self.new_tunnel_type.clone(),
-                                    self.new_tunnel_port,
-                                    &self.new_tunnel_destination
-                                );
-                                self.add_tunnel(new_tunnel);
-                                self.new_tunnel_name.clear();
-                                self.new_tunnel_destination.clear();
-                                self.new_tunnel_port = 0;
-                                self.edit_mode = false;
+                            if !new_tunnel_name.is_empty() && !new_tunnel_destination.is_empty() && new_tunnel_port > 0 {
+                                save_clicked = true;
                             }
                         }
                     });
-                });
-            ui.separator();
-            ui.heading(if self.selected_tunnel.is_some() { "编辑隧道" } else { "添加隧道" });
-            
-            let mut tunnel_name = self.new_tunnel_name.clone();
-            ui.horizontal(|ui| {
-                ui.label("隧道名称:");
-                if ui.text_edit_singleline(&mut tunnel_name).changed() {
-                    self.new_tunnel_name = tunnel_name;
-                }
-            });
-            
-            ui.horizontal(|ui| {
-                ui.label("隧道类型:");
-                egui::ComboBox::from_id_source("tunnel_type_combo")
-                    .selected_text(match self.new_tunnel_type {
-                        TunnelType::Client => "客户端",
-                        TunnelType::Server => "服务端",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.new_tunnel_type, TunnelType::Client, "客户端");
-                        ui.selectable_value(&mut self.new_tunnel_type, TunnelType::Server, "服务端");
-                    });
-            });
-            
-            let mut tunnel_port = self.new_tunnel_port.to_string();
-            ui.horizontal(|ui| {
-                ui.label("本地端口:");
-                if ui.text_edit_singleline(&mut tunnel_port).changed() {
-                    if let Ok(port) = tunnel_port.parse::<u16>() {
-                        self.new_tunnel_port = port;
-                    }
-                }
-            });
-            
-            let mut tunnel_destination = self.new_tunnel_destination.clone();
-            ui.horizontal(|ui| {
-                ui.label("目标地址:");
-                if ui.text_edit_singleline(&mut tunnel_destination).changed() {
-                    self.new_tunnel_destination = tunnel_destination;
-                }
-            });
-            
-            ui.horizontal(|ui| {
-                if ui.button("取消").clicked() {
-                    self.edit_mode = false;
-                    self.new_tunnel_name.clear();
-                    self.new_tunnel_destination.clear();
-                    self.new_tunnel_port = 0;
-                }
-                
-                if ui.button("保存").clicked() {
-                    // 保存隧道逻辑
-                    if !self.new_tunnel_name.is_empty() && !self.new_tunnel_destination.is_empty() && self.new_tunnel_port > 0 {
+                    
+                    // 返回用户操作结果和表单数据
+                    (save_clicked, cancel_clicked, new_tunnel_name, new_tunnel_type, new_tunnel_port, new_tunnel_destination)
+                })
+                .and_then(|inner_result| inner_result.inner)
+                .map(|(save_clicked, cancel_clicked, name, tunnel_type, port, destination)| {
+                    // 根据用户操作更新状态
+                    if save_clicked {
                         let new_tunnel = I2PTunnel::new(
-                            self.next_tunnel_id,
-                            &self.new_tunnel_name,
-                            self.new_tunnel_type.clone(),
-                            self.new_tunnel_port,
-                            &self.new_tunnel_destination
+                            next_tunnel_id,
+                            &name,
+                            tunnel_type,
+                            port,
+                            &destination
                         );
                         self.add_tunnel(new_tunnel);
                         self.new_tunnel_name.clear();
                         self.new_tunnel_destination.clear();
                         self.new_tunnel_port = 0;
                         self.edit_mode = false;
+                    } else if cancel_clicked {
+                        self.edit_mode = false;
+                        self.new_tunnel_name.clear();
+                        self.new_tunnel_destination.clear();
+                        self.new_tunnel_port = 0;
+                    } else {
+                        // 更新表单数据，但不关闭窗口
+                        self.new_tunnel_name = name;
+                        self.new_tunnel_type = tunnel_type;
+                        self.new_tunnel_port = port;
+                        self.new_tunnel_destination = destination;
                     }
-                }
-            });
+                });
+                
+            // 如果窗口被关闭，更新edit_mode
+            if !still_open {
+                self.edit_mode = false;
+            }
         }
     }
 }

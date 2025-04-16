@@ -119,7 +119,7 @@ impl Logger {
                     Some(LogLevel::Warning) => "WARN",
                     Some(LogLevel::Error) => "ERROR",
                     Some(LogLevel::Debug) => "DEBUG",
-                    None => "全部",
+                    none => "全部",
                 })
                 .show_ui(ui, |ui| {
                     if ui.selectable_value(&mut self.filter_level, None, "全部").clicked() {

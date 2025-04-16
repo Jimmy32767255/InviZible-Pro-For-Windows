@@ -815,7 +815,7 @@ Ok(VpnConfig::new(
     // 渲染UI
     pub fn ui(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.heading(RichText::new("VPN服务").color(VPN_COLOR).strong());
+            ui.heading(RichText::new("VPN").color(VPN_COLOR).strong());
             ui.add_space(10.0);
             
             let status_text = &self.connection_status;
@@ -827,7 +827,7 @@ Ok(VpnConfig::new(
             ui.label(RichText::new(status_text).color(status_color).strong());
             
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(if self.enabled { "断开连接" } else { "连接VPN" }).clicked() {
+                if ui.button(if self.enabled { "断开VPN" } else { "连接VPN" }).clicked() {
                     self.toggle_vpn();
                 }
             });
@@ -836,281 +836,312 @@ Ok(VpnConfig::new(
         ui.separator();
         
         // VPN简介
-        ui.collapsing("关于VPN服务", |ui| {
-            ui.label("VPN（虚拟专用网络）服务允许您通过加密隧道保护您的网络流量。");
-            ui.label("这对于访问被地理限制或审查的内容特别有用，同时也能保护您的隐私。");
-            ui.label("本模块支持多种VPN协议，包括Vmess、Shadowsocks等，并支持导入Clash订阅。");
+        ui.collapsing("关于VPN", |ui| {
+            ui.label("VPN（虚拟私人网络）可以加密您的网络连接，保护您的隐私，并帮助您绕过网络限制。");
+            ui.label("本模块支持多种VPN协议，包括Vmess、Shadowsocks、Trojan等。");
+            ui.label("您可以手动添加配置，或者通过Clash订阅批量导入配置。");
         });
         
         ui.separator();
         
-        // 如果显示订阅警告对话框
-        if self.show_subscription_warning {
-            let proceed = self.show_subscription_warning_dialog(ui);
-            if proceed {
-                // 创建并添加新订阅
-                let subscription = ClashSubscription::new(
-                    self.next_subscription_id,
-                    &self.new_subscription_name,
-                    &self.new_subscription_url
-                );
-                self.add_subscription(subscription);
-                
-                // 清空输入字段
-                self.new_subscription_name.clear();
-                self.new_subscription_url.clear();
-            }
-        }
-        
         // 标签页
-        egui::TopBottomPanel::top("vpn_tabs").show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.edit_mode, false, "VPN配置");
-                ui.selectable_value(&mut self.edit_mode, true, "Clash订阅");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.selected_subscription, None, "VPN配置");
+            
+            // 显示订阅标签
+            for subscription in &self.subscriptions {
+                ui.selectable_value(&mut self.selected_subscription, Some(subscription.id), &subscription.name);
+            }
+            
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("添加订阅").clicked() {
+                    self.edit_mode = true;
+                    self.selected_subscription = None;
+                }
             });
         });
         
-        if !self.edit_mode {
-            // VPN配置列表
-            ui.heading("VPN配置列表");
-            
-            ScrollArea::vertical().show(ui, |ui| {
-                for config in &mut self.configs {
-                    let is_selected = self.selected_config == Some(config.id);
-                    let selected = is_selected;
+        ui.separator();
+        
+        // 根据选择的标签页显示内容
+        if let Some(subscription_id) = self.selected_subscription {
+            // 显示订阅内容
+            if let Some(subscription) = self.subscriptions.iter().find(|s| s.id == subscription_id) {
+                ui.horizontal(|ui| {
+                    ui.heading(&subscription.name);
+                    ui.label(format!("(上次更新: {})", subscription.last_updated));
                     
-                    let config_id = config.id;
-                    ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("更新").clicked() {
+                            self.update_subscription(subscription_id);
+                        }
+                        if ui.button("删除").clicked() {
+                            self.remove_subscription(subscription_id);
+                        }
+                    });
+                });
+                
+                ui.label(format!("URL: {}", subscription.url));
+                ui.label(format!("配置数量: {}", subscription.configs.len()));
+                
+                // 显示订阅中的配置列表
+                self.render_config_list(ui, &subscription.configs);
+            }
+        } else {
+            // 显示手动添加的配置
+            ui.horizontal(|ui| {
+                ui.heading("VPN配置");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("添加配置").clicked() {
+                        self.edit_mode = true;
+                    }
+                });
+            });
+            
+            // 显示配置列表
+            self.render_config_list(ui, &self.configs);
+        }
+    }
+    
+    // 渲染配置列表
+    fn render_config_list(&mut self, ui: &mut Ui, configs: &[VpnConfig]) {
+        ScrollArea::vertical().show(ui, |ui| {
+            Grid::new("vpn_configs_grid")
+                .num_columns(4)
+                .striped(true)
+                .spacing([10.0, 4.0])
+                .show(ui, |ui| {
+                    // 表头
+                    ui.label(RichText::new("启用").strong());
+                    ui.label(RichText::new("名称").strong());
+                    ui.label(RichText::new("服务器").strong());
+                    ui.label(RichText::new("操作").strong());
+                    ui.end_row();
+                    
+                    // 配置列表
+                    let configs_clone = configs.to_vec(); // 克隆配置列表以避免借用冲突
+                    for config in &configs_clone {
+                        // 启用/禁用复选框
                         let mut enabled = config.enabled;
-                        if ui.checkbox(&mut enabled, "").clicked() {
+                        let config_id = config.id; // 先获取ID避免借用冲突
+                        if ui.checkbox(&mut enabled, "").changed() {
                             self.toggle_config(config_id);
                         }
                         
-                        if ui.selectable_label(selected, &config.name).clicked() {
-                            if is_selected {
-                                self.selected_config = None;
-                            } else {
-                                self.selected_config = Some(config.id);
-                            }
+                        // 配置名称
+                        let config_text = RichText::new(&config.name);
+                        if ui.selectable_label(self.selected_config == Some(config.id), config_text).clicked() {
+                            self.selected_config = Some(config.id);
                         }
                         
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // 服务器信息
+                        ui.label(format!("{} ({})", config.server, config.port));
+                        
+                        // 操作按钮
+                        let config_id = config.id; // 再次获取ID避免闭包中的借用冲突
+                        ui.horizontal(|ui| {
+                            if ui.button("编辑").clicked() {
+                                // 编辑配置逻辑
+                                self.selected_config = Some(config_id);
+                                self.edit_mode = true;
+                            }
                             if ui.button("删除").clicked() {
-                                self.remove_config(config.id);
+                                self.remove_config(config_id);
                             }
                         });
+                        
+                        ui.end_row();
+                    }
+                });
+        });
+    }
+
+    // 添加/编辑配置对话框
+    if self.edit_mode {
+        let title = if self.selected_subscription.is_some() {
+            "添加Clash订阅"
+        } else if self.selected_config.is_some() {
+            "编辑VPN配置"
+        } else {
+            "添加VPN配置"
+        };
+        
+        let response = egui::Window::new(title)
+            .open(&mut self.edit_mode)
+            .show(ui.ctx(), |ui| {
+                if self.selected_subscription.is_some() {
+                    // 添加Clash订阅表单
+                    ui.horizontal(|ui| {
+                        ui.label("订阅名称:");
+                        ui.text_edit_singleline(&mut self.new_subscription_name);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("订阅URL:");
+                        ui.text_edit_singleline(&mut self.new_subscription_url);
                     });
                     
-                    if selected {
-                        ui.indent("config_details", |ui| {
-                            Grid::new(format!("config_grid_{}", config.id))
-                                .num_columns(2)
-                                .spacing([10.0, 8.0])
-                                .show(ui, |ui| {
-                                    ui.label("协议:");
-                                    ui.label(format!("{:?}", config.protocol));
-                                    ui.end_row();
-                                    
-                                    ui.label("服务器:");
-                                    ui.label(&config.server);
-                                    ui.end_row();
-                                    
-                                    ui.label("端口:");
-                                    ui.label(config.port.to_string());
-                                    ui.end_row();
-                                    
-                                    ui.label("UUID/密码:");
-                                    ui.label(&config.uuid);
-                                    ui.end_row();
-                                    
-                                    ui.label("加密方式:");
-                                    ui.label(&config.encryption);
-                                    ui.end_row();
-                                });
+                    if self.show_subscription_warning {
+                        ui.label(RichText::new("警告: 从不受信任的来源添加订阅可能存在安全风险。").color(Color32::RED));
+                    }
+                    
+                    ui.checkbox(&mut self.show_subscription_warning, "我了解添加订阅的风险");
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("取消").clicked() {
+                            false
+                        } else if ui.button("添加").clicked() && self.show_subscription_warning {
+                            true
+                        } else {
+                            false
+                        }
+                    }).inner.unwrap_or(false)
+                } else {
+                    // 添加/编辑VPN配置表单
+                    ui.horizontal(|ui| {
+                        ui.label("配置名称:");
+                        ui.text_edit_singleline(&mut self.new_config_name);
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("协议类型:");
+                        egui::ComboBox::from_id_source("protocol_combo")
+                            .selected_text(match self.new_config_protocol {
+                                VpnProtocol::Vmess => "Vmess",
+                                VpnProtocol::Shadowsocks => "Shadowsocks",
+                                VpnProtocol::Trojan => "Trojan",
+                                VpnProtocol::Wireguard => "Wireguard",
+                                VpnProtocol::OpenVPN => "OpenVPN",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Vmess, "Vmess");
+                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Shadowsocks, "Shadowsocks");
+                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Trojan, "Trojan");
+                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Wireguard, "Wireguard");
+                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::OpenVPN, "OpenVPN");
+                            });
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("服务器地址:");
+                        ui.text_edit_singleline(&mut self.new_config_server);
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("端口:");
+                        ui.add(egui::DragValue::new(&mut self.new_config_port).speed(1.0));
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        let field_name = match self.new_config_protocol {
+                            VpnProtocol::Vmess => "UUID:",
+                            VpnProtocol::Shadowsocks | VpnProtocol::Trojan => "密码:",
+                            _ => "密钥:",
+                        };
+                        ui.label(field_name);
+                        ui.text_edit_singleline(&mut self.new_config_uuid);
+                    });
+                    
+                    if self.new_config_protocol == VpnProtocol::Vmess || self.new_config_protocol == VpnProtocol::Shadowsocks {
+                        ui.horizontal(|ui| {
+                            ui.label("加密方式:");
+                            ui.text_edit_singleline(&mut self.new_config_encryption);
                         });
                     }
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("取消").clicked() {
+                            false
+                        } else if ui.button("保存").clicked() {
+                            true
+                        } else {
+                            false
+                        }
+                    }).inner.unwrap_or(false)
                 }
             });
-            
+        
+        if let Some(response) = response {
+            if response.inner {
+                if self.selected_subscription.is_some() {
+                    // 添加新订阅
+                    if !self.new_subscription_name.is_empty() && !self.new_subscription_url.is_empty() {
+                        let new_subscription = ClashSubscription::new(
+                            self.next_subscription_id,
+                            &self.new_subscription_name,
+                            &self.new_subscription_url
+                        );
+                        self.add_subscription(new_subscription);
+                        self.new_subscription_name.clear();
+                        self.new_subscription_url.clear();
+                    }
+                } else {
+                    // 添加/编辑VPN配置
+                    if !self.new_config_name.is_empty() && !self.new_config_server.is_empty() && !self.new_config_uuid.is_empty() {
+                        let new_config = VpnConfig::new(
+                            self.next_config_id,
+                            &self.new_config_name,
+                            self.new_config_protocol.clone(),
+                            &self.new_config_server,
+                            self.new_config_port,
+                            &self.new_config_uuid,
+                            &self.new_config_encryption
+                        );
+                        self.add_config(new_config);
+                        self.new_config_name.clear();
+                        self.new_config_server.clear();
+                        self.new_config_uuid.clear();
+                        self.new_config_encryption = "auto".to_string();
+                    }
+                }
+            }
+        }
+    }
+    
+    // 配置详情区域
+    if let Some(config_id) = self.selected_config {
+        if let Some(config) = self.configs.iter().find(|c| c.id == config_id) {
             ui.separator();
+            ui.heading("配置详情");
             
-            // 添加新VPN配置
-            ui.heading("添加新VPN配置");
-            
-            Grid::new("new_config_grid")
+            Grid::new("config_details_grid")
                 .num_columns(2)
-                .spacing([10.0, 8.0])
+                .spacing([10.0, 4.0])
                 .show(ui, |ui| {
                     ui.label("名称:");
-                    ui.text_edit_singleline(&mut self.new_config_name);
+                    ui.label(&config.name);
                     ui.end_row();
                     
                     ui.label("协议:");
-                    egui::ComboBox::from_id_source("protocol_combo")
-                        .selected_text(format!("{:?}", self.new_config_protocol))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Vmess, "Vmess");
-                            ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Shadowsocks, "Shadowsocks");
-                            ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Trojan, "Trojan");
-                            ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Wireguard, "Wireguard");
-                            ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::OpenVPN, "OpenVPN");
-                        });
+                    ui.label(match config.protocol {
+                        VpnProtocol::Vmess => "Vmess",
+                        VpnProtocol::Shadowsocks => "Shadowsocks",
+                        VpnProtocol::Trojan => "Trojan",
+                        VpnProtocol::Wireguard => "Wireguard",
+                        VpnProtocol::OpenVPN => "OpenVPN",
+                    });
                     ui.end_row();
                     
                     ui.label("服务器:");
-                    ui.text_edit_singleline(&mut self.new_config_server);
+                    ui.label(&config.server);
                     ui.end_row();
                     
                     ui.label("端口:");
-                    let mut port_str = self.new_config_port.to_string();
-                    if ui.text_edit_singleline(&mut port_str).changed() {
-                        if let Ok(port) = port_str.parse::<u16>() {
-                            self.new_config_port = port;
-                        }
-                    }
+                    ui.label(config.port.to_string());
                     ui.end_row();
                     
-                    ui.label("UUID/密码:");
-                    ui.text_edit_singleline(&mut self.new_config_uuid);
-                    ui.end_row();
-                    
-                    ui.label("加密方式:");
-                    ui.text_edit_singleline(&mut self.new_config_encryption);
-                    ui.end_row();
-                });
-            
-            if ui.button("添加配置").clicked() {
-                if !self.new_config_name.is_empty() && !self.new_config_server.is_empty() && !self.new_config_uuid.is_empty() {
-                    let config = VpnConfig::new(
-                        self.next_config_id,
-                        &self.new_config_name,
-                        self.new_config_protocol.clone(),
-                        &self.new_config_server,
-                        self.new_config_port,
-                        &self.new_config_uuid,
-                        &self.new_config_encryption
-                    );
-                    self.add_config(config);
-                    
-                    // 清空输入字段
-                    self.new_config_name.clear();
-                    self.new_config_server.clear();
-                    self.new_config_uuid.clear();
-                    self.new_config_encryption = "auto".to_string();
-                }
-            }
-            
-            // 导入VPN URL
-            ui.separator();
-            ui.heading("导入VPN URL");
-            
-            ui.horizontal(|ui| {
-                ui.label("URL:");
-                let mut import_url = String::new();
-ui.text_edit_singleline(&mut import_url);
-                
-                if ui.button("导入").clicked() && !import_url.is_empty() {
-                    match self.import_vpn_url(&import_url) {
-                        Ok(_) => {
-                            if let Ok(mut logger) = self.logger.lock() {
-                                logger.info("VPN", "成功导入VPN配置");
-                            }
-                        },
-                        Err(e) => {
-                            if let Ok(mut logger) = self.logger.lock() {
-                                logger.error("VPN", &format!("导入VPN配置失败: {}", e));
-                            }
-                        }
-                    }
-                }
-            });
-            
-            ui.label("支持的URL格式: vmess://, ss://, trojan://");
-            ui.label("或者直接粘贴分享链接");
-        } else {
-            // Clash订阅管理
-            ui.heading("Clash订阅管理");
-            
-            ScrollArea::vertical().show(ui, |ui| {
-                for subscription in &mut self.subscriptions {
-                    let is_selected = self.selected_subscription == Some(subscription.id);
-                    let selected = is_selected;
-                    
-                    let subscription = subscription.clone(); // 克隆订阅以避免多重可变借用
-                    let sub_id = subscription.id;
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(selected, &subscription.name).clicked() {
-                            if is_selected {
-                                self.selected_subscription = None;
-                            } else {
-                                self.selected_subscription = Some(sub_id);
-                            }
-                        }
-                        
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("删除").clicked() {
-                                self.remove_subscription(subscription.id);
-                            }
-                            
-                            if ui.button("更新").clicked() {
-                                self.update_subscription(subscription.id);
-                            }
-                        });
+                    ui.label(match config.protocol {
+                        VpnProtocol::Vmess => "UUID:",
+                        VpnProtocol::Shadowsocks | VpnProtocol::Trojan => "密码:",
+                        _ => "密钥:",
                     });
+                    ui.label(&config.uuid);
+                    ui.end_row();
                     
-                    if selected {
-                        ui.indent("subscription_details", |ui| {
-                            Grid::new(format!("subscription_grid_{}", subscription.id))
-                                .num_columns(2)
-                                .spacing([10.0, 8.0])
-                                .show(ui, |ui| {
-                                    ui.label("URL:");
-                                    ui.label(&subscription.url);
-                                    ui.end_row();
-                                    
-                                    ui.label("最后更新:");
-                                    ui.label(&subscription.last_updated);
-                                    ui.end_row();
-                                    
-                                    ui.label("配置数量:");
-                                    ui.label(subscription.configs.len().to_string());
-                                    ui.end_row();
-                                });
-                            
-                            if !subscription.configs.is_empty() {
-                                ui.label("包含的配置:");
-                                for config in &subscription.configs {
-                                    ui.label(format!("- {} ({:?})", config.name, config.protocol));
-                                }
-                            }
-                        });
+                    if config.protocol == VpnProtocol::Vmess || config.protocol == VpnProtocol::Shadowsocks {
+                        ui.label("加密方式:");
+                        ui.label(&config.encryption);
+                        ui.end_row();
                     }
-                }
-            });
-            
-            ui.separator();
-            
-            // 添加新Clash订阅
-            ui.heading("添加新Clash订阅");
-            
-            Grid::new("new_subscription_grid")
-                .num_columns(2)
-                .spacing([10.0, 8.0])
-                .show(ui, |ui| {
-                    ui.label("名称:");
-                    ui.text_edit_singleline(&mut self.new_subscription_name);
-                    ui.end_row();
-                    
-                    ui.label("URL:");
-                    ui.text_edit_singleline(&mut self.new_subscription_url);
-                    ui.end_row();
                 });
-            
-            if ui.button("添加订阅").clicked() {
-                if !self.new_subscription_name.is_empty() && !self.new_subscription_url.is_empty() {
-                    // 显示安全警告对话框
-                    self.show_subscription_warning = true;
-                }
-            }
         }
     }

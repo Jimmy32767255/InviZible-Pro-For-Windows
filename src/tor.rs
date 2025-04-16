@@ -1,6 +1,9 @@
 use eframe::egui::{self, Color32, RichText, Ui, Grid, ScrollArea};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
+use std::process::Child;
+use torut::control::TorControlConnection;
+use tokio::runtime::Runtime;
 
 use crate::logger::Logger;
 use crate::app::TOR_COLOR;
@@ -58,6 +61,7 @@ pub struct TorModule {
     node_type: NodeType,
     connection_status: String,
     bandwidth_limit: u32,  // KB/s
+    tor_process: Option<Child>
 }
 
 impl TorModule {
@@ -76,6 +80,7 @@ impl TorModule {
             node_type: NodeType::Relay,
             connection_status: "未连接".to_string(),
             bandwidth_limit: 1024,  // 默认1MB/s
+            tor_process: None,
         };
         
         // 添加一些示例网桥
@@ -144,7 +149,16 @@ impl TorModule {
     }
     
     // 启用/禁用Tor
-    fn toggle_tor(&mut self) {
+    async fn connect_to_tor(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let tor_control_port = 9051;
+        let tor_control = TorControlConnection::connect("127.0.0.1", tor_control_port).await?;
+        tor_control.authenticate("").await?;
+        self.connection_status = "已连接".to_string();
+        Ok(())
+    }
+    
+    // 启用/禁用Tor
+    fn toggle_tor(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // 先获取当前状态的副本，避免同时借用
         let new_enabled = !self.enabled;
         let status_message = if new_enabled { "启用" } else { "禁用" };
@@ -166,22 +180,29 @@ impl TorModule {
             Some(std::process::Command::new("tor")
                 .arg("--RunAsDaemon")
                 .arg("1")
-                .spawn()?)
+                .spawn().expect("无法启动Tor进程"))
         } else {
             if let Some(mut process) = self.tor_process.take() {
-                process.kill()?;
+                let _ = process.kill();
             }
             None
         };
         self.tor_process = tor_process;
+        
         // 模拟连接过程
         if new_enabled {
-            // 异步连接逻辑
-            let tor_control_port = 9051;
-            let tor_control = torut::control::TorControlConnection::connect("127.0.0.1", tor_control_port).await?;
-            tor_control.authenticate("").await?;
-            self.connection_status = "已连接".to_string();
+            // 创建一个运行时来执行异步连接逻辑
+            let rt = Runtime::new().unwrap();
+            let result = rt.block_on(self.connect_to_tor());
+            if let Err(e) = result {
+                if let Ok(mut logger) = self.logger.lock() {
+                    logger.error("Tor", &format!("连接Tor失败: {}", e));
+                }
+                self.connection_status = "连接失败".to_string();
+            }
         }
+        
+        Ok(())
     }
     
     // 启用/禁用网桥
@@ -251,7 +272,11 @@ impl TorModule {
             
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(if self.enabled { "停止Tor" } else { "启动Tor" }).clicked() {
-                    self.toggle_tor();
+                    if let Err(e) = self.toggle_tor() {
+                        if let Ok(mut logger) = self.logger.lock() {
+                            logger.error("Tor", &format!("Tor操作失败: {}", e));
+                        }
+                    }
                 }
             });
         });
@@ -288,7 +313,7 @@ impl TorModule {
                         if self.node_type == NodeType::Relay {
                             // 显示警告对话框
                             let response = egui::Window::new("警告")
-                                .open(&mut self.show_warning)
+                                .open(&mut true)
                                 .show(ui.ctx(), |ui| {
                                     ui.label("运行出口节点可能会带来法律风险，因为其他用户的流量将通过您的网络连接离开Tor网络。");
                                     ui.horizontal(|ui| {

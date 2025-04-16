@@ -2,6 +2,8 @@
 
 这是一个类似于InviZible Pro的网络安全软件，专为Windows平台设计，使用Rust语言开发。
 
+###### 尽管类似于InviZible Pro，但本项目实际上并未使用InviZible Pro的任何代码。
+
 ## 功能特点
 
 ### 防火墙

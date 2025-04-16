@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, RichText, Ui, Grid};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
+use arboard::Clipboard;
 
 use crate::logger::Logger;
 use crate::app::SETTINGS_COLOR;
@@ -38,6 +39,68 @@ impl Default for ProxyConfig {
     }
 }
 
+// 代理服务器特性
+pub trait ProxyServer {
+    fn start(&self) -> Box<dyn ProxyServer>;
+    fn stop(&self);
+}
+
+// HTTP代理服务器
+pub struct HttpProxy {
+    address: String,
+    port: u16,
+}
+
+impl HttpProxy {
+    pub fn new(address: String, port: u16) -> Self {
+        Self { address, port }
+    }
+}
+
+impl ProxyServer for HttpProxy {
+    fn start(&self) -> Box<dyn ProxyServer> {
+        // 实现HTTP代理服务器启动逻辑
+        println!("Starting HTTP proxy server on {}:{}", self.address, self.port);
+        Box::new(Self {
+            address: self.address.clone(),
+            port: self.port,
+        })
+    }
+    
+    fn stop(&self) {
+        // 实现HTTP代理服务器停止逻辑
+        println!("Stopping HTTP proxy server on {}:{}", self.address, self.port);
+    }
+}
+
+// SOCKS5代理服务器
+pub struct Socks5Proxy {
+    address: String,
+    port: u16,
+}
+
+impl Socks5Proxy {
+    pub fn new(address: String, port: u16) -> Self {
+        Self { address, port }
+    }
+}
+
+impl ProxyServer for Socks5Proxy {
+    fn start(&self) -> Box<dyn ProxyServer> {
+        // 实现SOCKS5代理服务器启动逻辑
+        println!("Starting SOCKS5 proxy server on {}:{}", self.address, self.port);
+        Box::new(Self {
+            address: self.address.clone(),
+            port: self.port,
+        })
+    }
+    
+    fn stop(&self) {
+        // 实现SOCKS5代理服务器停止逻辑
+        println!("Stopping SOCKS5 proxy server on {}:{}", self.address, self.port);
+    }
+}
+
 // 代理模块结构
 pub struct ProxyModule {
     config: ProxyConfig,
@@ -45,11 +108,13 @@ pub struct ProxyModule {
     status: String,
     port_conflict: bool,
     port_checking: bool,
+    proxy: Option<Box<dyn ProxyServer>>,
 }
 
 impl ProxyModule {
     pub fn new(logger: Arc<Mutex<Logger>>) -> Self {
         let module = Self {
+            proxy: None,
             config: ProxyConfig::default(),
             logger,
             status: "未启动".to_string(),
