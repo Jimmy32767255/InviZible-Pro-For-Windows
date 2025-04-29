@@ -111,7 +111,7 @@ impl InviZibleApp {
             Tab::Proxy => self.proxy_module.ui(ui),
             Tab::VPN => self.vpn_module.ui(ui),
             Tab::Logs => {
-                if let Ok(logger) = self.logger.lock() {
+                if let Ok(mut logger) = self.logger.lock() {
                     logger.ui(ui);
                 }
             },

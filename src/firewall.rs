@@ -55,20 +55,30 @@ impl FirewallRule {
 
 // 防火墙模块结构
 pub struct FirewallModule {
-    enabled: bool,
-    rules: Vec<FirewallRule>,
-    next_rule_id: usize,
-    logger: Arc<Mutex<Logger>>,
-    selected_rule: Option<usize>,
-    new_rule_name: String,
-    new_rule_type: RuleType,
-    edit_mode: bool,
-    running_applications: HashMap<String, bool>, // 应用程序路径 -> 是否允许联网
+    pub enabled: bool,
+    pub rules: Vec<FirewallRule>,
+    pub next_rule_id: usize,
+    pub logger: Arc<Mutex<Logger>>,
+    pub selected_rule: Option<usize>,
+    pub edit_mode: bool,
+    pub new_rule_type: RuleType,
+    pub new_rule_name: String,
+    pub new_rule_port: u16,
+    pub new_rule_protocol: String,
+    pub new_rule_address: String,
+    pub new_rule_action: RuleAction,
+    pub new_rule_description: String,
+    pub running_applications: HashMap<String, bool>
 }
 
 impl FirewallModule {
     pub fn new(logger: Arc<Mutex<Logger>>) -> Self {
         let mut module = Self {
+            new_rule_action: RuleAction::Block,
+            new_rule_address: String::new(),
+            new_rule_description: String::new(),
+            new_rule_protocol: String::from("TCP"),
+            new_rule_port: 0,
             enabled: false,
             rules: Vec::new(),
             next_rule_id: 1,
@@ -442,8 +452,8 @@ impl FirewallModule {
                     ui.horizontal(|ui| {
                         ui.label("协议:");
                         egui::ComboBox::from_label("").selected_text("TCP").show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.new_rule_protocol, "TCP", "TCP");
-                            ui.selectable_value(&mut self.new_rule_protocol, "UDP", "UDP");
+                            ui.selectable_value(&mut self.new_rule_protocol, "TCP".to_string(), "TCP");
+                            ui.selectable_value(&mut self.new_rule_protocol, "UDP".to_string(), "UDP");
                         });
                     });
                 },

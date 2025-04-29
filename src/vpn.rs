@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, RichText, Ui, Grid, ScrollArea};
+use eframe::egui::{self, Color32, RichText, Ui};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use reqwest::blocking::Client;
@@ -409,6 +409,73 @@ impl VpnModule {
     }
     
     // 导入VPN配置URL
+    fn parse_shadowsocks_url(&self, url: &str) -> Result<VpnConfig, String> {
+        let decoded = general_purpose::STANDARD.decode(url.replace("ss://", ""))
+            .map_err(|_| "Base64解码失败")?;
+        let parts = String::from_utf8(decoded)
+            .map_err(|_| "UTF-8解码失败")?
+            .splitn(2, '@').collect::<Vec<_>>();
+        
+        let (method_password, server_port) = match parts.as_slice() {
+            &[mp, sp] => (mp, sp),
+            _ => return Err("无效的Shadowsocks格式".into())
+        };
+        
+        let method_password = method_password.splitn(2, ':').collect::<Vec<_>>();
+        let (method, password) = match method_password.as_slice() {
+            &[m, p] => (m, p),
+            _ => return Err("无效的加密方法格式".into())
+        };
+        
+        let server_port = server_port.splitn(2, ':').collect::<Vec<_>>();
+        let (server, port) = match server_port.as_slice() {
+            &[s, p] => (s, p.parse().unwrap_or(8388)),
+            _ => return Err("无效的服务器地址格式".into())
+        };
+        
+        Ok(VpnConfig::new(
+            0,
+            "从URL导入的Shadowsocks",
+            VpnProtocol::Shadowsocks,
+            server,
+            port,
+            password,
+            method
+        ))
+    }
+    
+    fn parse_trojan_url(&self, url: &str) -> Result<VpnConfig, String> {
+        let uri = url.replace("trojan://", "");
+        let parts = uri.splitn(2, '@').collect::<Vec<_>>();
+        
+        let (password_server, remainder) = match parts.as_slice() {
+            &[ps, r] => (ps, r),
+            _ => return Err("无效的Trojan格式".into())
+        };
+        
+        let password_server = password_server.splitn(2, ':').collect::<Vec<_>>();
+        let (password, server_port) = match password_server.as_slice() {
+            &[p, sp] => (p, sp),
+            _ => return Err("无效的密码格式".into())
+        };
+        
+        let server_port = server_port.splitn(2, ':').collect::<Vec<_>>();
+        let (server, port) = match server_port.as_slice() {
+            &[s, p] => (s, p.parse().unwrap_or(443)),
+            _ => return Err("无效的服务器地址格式".into())
+        };
+        
+        Ok(VpnConfig::new(
+            0,
+            "从URL导入的Trojan",
+            VpnProtocol::Trojan,
+            server,
+            port,
+            password,
+            "auto"
+        ))
+    }
+    
     fn import_vpn_url(&mut self, url_str: &str) -> Result<(), String> {
         if url_str.starts_with("vmess://") {
             // 先解析URL，避免同时借用self
@@ -534,54 +601,6 @@ impl VpnModule {
         // 更新状态
         self.enabled = new_enabled;
         self.connection_status = if new_enabled { "正在连接..." } else { "未连接" }.to_string();
-        
-        // 启动或停止VPN服务
-        if new_enabled {
-            // 查找启用的配置
-            let enabled_configs: Vec<VpnConfig> = self.configs.iter()
-                .filter(|c| c.enabled)
-                .cloned() // 克隆所有配置避免借用冲突
-                .collect();
-            
-            if enabled_configs.is_empty() {
-                {
-                    // 使用单独的作用域限制logger的借用范围
-                    if let Ok(mut logger) = self.logger.lock() {
-                        logger.warning("VPN", "没有启用的VPN配置，无法连接");
-                    }
-                }
-                self.enabled = false;
-                self.connection_status = "未连接".to_string();
-                return;
-            }
-            
-            // 使用第一个启用的配置
-            let config = &enabled_configs[0]; // 已经克隆，不需要再次克隆
-            
-            // 记录连接信息
-            {
-                // 使用单独的作用域限制logger的借用范围
-                if let Ok(mut logger) = self.logger.lock() {
-                    logger.info("VPN", &format!("正在连接到 {} ({}:{})", 
-                                                config.name, config.server, config.port));
-                }
-            }
-            
-            // 在实际应用中，这里会根据协议类型启动不同的VPN客户端
-            match config.protocol {
-                VpnProtocol::Vmess => self.start_vmess_client(config),
-                VpnProtocol::Shadowsocks => self.start_shadowsocks_client(config),
-                VpnProtocol::Trojan => self.start_trojan_client(config),
-                VpnProtocol::Wireguard => self.start_wireguard_client(config),
-                VpnProtocol::OpenVPN => self.start_openvpn_client(config),
-            }
-            
-            // 模拟连接成功
-            self.connection_status = "已连接".to_string();
-        } else {
-            // 停止VPN客户端
-            self.stop_vpn_client();
-        }
     }
     
     // 启动Vmess客户端
@@ -598,12 +617,12 @@ impl VpnModule {
         }
         
         // 启动Vmess客户端
-
         if let Ok(mut logger) = self.logger.lock() {
             logger.info("VPN", &format!("正在启动Vmess客户端: {}", config.name));
         }
+        
         let client = VmessClient::new(config.server.clone(), config.port, config.uuid.clone(), config.encryption.clone());
-        match client.connect() {
+        match client.connect().await {
             Ok(_) => {
                 if let Ok(mut logger) = self.logger.lock() {
                     logger.info("VPN", "Vmess客户端启动成功");
@@ -615,7 +634,40 @@ impl VpnModule {
                 }
             }
         }
-        // 例如使用v2ray-rust库或调用外部v2ray程序
+    }
+    
+    // 启动Shadowsocks客户端
+    // 启动Shadowsocks客户端
+    fn start_shadowsocks_client(&mut self, config: &VpnConfig) {
+        // 克隆必要变量避免借用冲突
+        let client_name = config.name.clone();
+        let logger_clone = self.logger.clone();
+        
+        // 在单独作用域中使用克隆的logger
+        {
+            if let Ok(mut logger) = logger_clone.lock() {
+                logger.info("VPN", &format!("启动Shadowsocks客户端: {}", client_name));
+            }
+        }
+        
+        // 启动Shadowsocks客户端
+        if let Ok(mut logger) = self.logger.lock() {
+            logger.info("VPN", &format!("正在启动Shadowsocks客户端: {}", config.name));
+        }
+        
+        let client = ShadowsocksClient::new(config.server.clone(), config.port, config.uuid.clone(), config.encryption.clone());
+        match client.connect().await {
+            Ok(_) => {
+                if let Ok(mut logger) = self.logger.lock() {
+                    logger.info("VPN", "Shadowsocks客户端启动成功");
+                }
+            }
+            Err(e) => {
+                if let Ok(mut logger) = self.logger.lock() {
+                    logger.error("VPN", &format!("Shadowsocks客户端启动失败: {}", e));
+                }
+            }
+        }
     }
     
     // 启动Shadowsocks客户端
@@ -636,7 +688,14 @@ impl VpnModule {
             logger.info("VPN", &format!("正在启动Shadowsocks客户端: {}", config.name));
         }
         let client = ShadowsocksClient::new(config.server.clone(), config.port, config.uuid.clone(), config.encryption.clone());
-        match client.connect() {
+        match client.connect().await {
+            Ok(connection) => {
+                // 处理连接成功的情况
+            },
+            Err(e) => {
+                // 处理连接失败的情况
+            }
+        }
             Ok(_) => {
                 if let Ok(mut logger) = self.logger.lock() {
                     logger.info("VPN", "Shadowsocks客户端启动成功");
@@ -648,7 +707,6 @@ impl VpnModule {
                 }
             }
         }
-    }
     }
     
     // 启动Trojan客户端
@@ -886,7 +944,7 @@ impl VpnModule {
                 ui.label(format!("配置数量: {}", subscription.configs.len()));
                 
                 // 显示订阅中的配置列表
-                self.render_config_list(ui, &subscription.configs);
+                self.add_config(subscription.configs.clone());
             }
         } else {
             // 显示手动添加的配置
@@ -900,249 +958,287 @@ impl VpnModule {
             });
             
             // 显示配置列表
-            self.render_config_list(ui, &self.configs);
+            self.add_config(self.configs.clone());
         }
-    }
-    
-    // 渲染配置列表
-    fn render_config_list(&mut self, ui: &mut Ui, configs: &[VpnConfig]) {
-        ScrollArea::vertical().show(ui, |ui| {
-            Grid::new("vpn_configs_grid")
-                .num_columns(4)
-                .striped(true)
-                .spacing([10.0, 4.0])
-                .show(ui, |ui| {
-                    // 表头
-                    ui.label(RichText::new("启用").strong());
-                    ui.label(RichText::new("名称").strong());
-                    ui.label(RichText::new("服务器").strong());
-                    ui.label(RichText::new("操作").strong());
-                    ui.end_row();
-                    
-                    // 配置列表
-                    let configs_clone = configs.to_vec(); // 克隆配置列表以避免借用冲突
-                    for config in &configs_clone {
-                        // 启用/禁用复选框
-                        let mut enabled = config.enabled;
-                        let config_id = config.id; // 先获取ID避免借用冲突
-                        if ui.checkbox(&mut enabled, "").changed() {
-                            self.toggle_config(config_id);
-                        }
-                        
-                        // 配置名称
-                        let config_text = RichText::new(&config.name);
-                        if ui.selectable_label(self.selected_config == Some(config.id), config_text).clicked() {
-                            self.selected_config = Some(config.id);
-                        }
-                        
-                        // 服务器信息
-                        ui.label(format!("{} ({})", config.server, config.port));
-                        
-                        // 操作按钮
-                        let config_id = config.id; // 再次获取ID避免闭包中的借用冲突
+
+        // 添加/编辑配置对话框
+        if self.edit_mode {
+            let title = if self.selected_subscription.is_some() {
+                "添加Clash订阅"
+            } else if self.selected_config.is_some() {
+                "编辑VPN配置"
+            } else {
+                "添加VPN配置"
+            };
+            
+            let response = egui::Window::new(title)
+                .open(&mut self.edit_mode)
+                .show(ui.ctx(), |ui| {
+                    if self.selected_subscription.is_some() {
+                        // 添加Clash订阅表单
                         ui.horizontal(|ui| {
-                            if ui.button("编辑").clicked() {
-                                // 编辑配置逻辑
-                                self.selected_config = Some(config_id);
-                                self.edit_mode = true;
-                            }
-                            if ui.button("删除").clicked() {
-                                self.remove_config(config_id);
-                            }
+                            ui.label("订阅名称:");
+                            ui.text_edit_singleline(&mut self.new_subscription_name);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("订阅URL:");
+                            ui.text_edit_singleline(&mut self.new_subscription_url);
                         });
                         
-                        ui.end_row();
+                        if self.show_subscription_warning {
+                            ui.label(RichText::new("警告: 从不受信任的来源添加订阅可能存在安全风险。").color(Color32::RED));
+                        }
+                        
+                        ui.checkbox(&mut self.show_subscription_warning, "我了解添加订阅的风险");
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button("取消").clicked() {
+                                false
+                            } else if ui.button("添加").clicked() && self.show_subscription_warning {
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        if let Some(inner_response) = response {
+                            if let Some(inner) = inner_response.inner {
+                                inner
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        // 添加/编辑VPN配置表单
+                        ui.horizontal(|ui| {
+                            ui.label("配置名称:");
+                            ui.text_edit_singleline(&mut self.new_config_name);
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("协议类型:");
+                            egui::ComboBox::from_id_source("protocol_combo")
+                                .selected_text(match self.new_config_protocol {
+                                    VpnProtocol::Vmess => "Vmess",
+                                    VpnProtocol::Shadowsocks => "Shadowsocks",
+                                    VpnProtocol::Trojan => "Trojan",
+                                    VpnProtocol::Wireguard => "Wireguard",
+                                    VpnProtocol::OpenVPN => "OpenVPN",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Vmess, "Vmess");
+                                    ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Shadowsocks, "Shadowsocks");
+                                    ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Trojan, "Trojan");
+                                    ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Wireguard, "Wireguard");
+                                    ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::OpenVPN, "OpenVPN");
+                                });
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("服务器地址:");
+                            ui.text_edit_singleline(&mut self.new_config_server);
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("端口:");
+                            ui.add(egui::DragValue::new(&mut self.new_config_port).speed(1.0));
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            let field_name = match self.new_config_protocol {
+                                VpnProtocol::Vmess => "UUID:",
+                                VpnProtocol::Shadowsocks | VpnProtocol::Trojan => "密码:",
+                                _ => "密钥:",
+                            };
+                            ui.label(field_name);
+                            ui.text_edit_singleline(&mut self.new_config_uuid);
+                        });
+                        
+                        if self.new_config_protocol == VpnProtocol::Vmess || self.new_config_protocol == VpnProtocol::Shadowsocks {
+                            ui.horizontal(|ui| {
+                                ui.label("加密方式:");
+                                ui.text_edit_singleline(&mut self.new_config_encryption);
+                            });
+                        }
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button("取消").clicked() {
+                                false
+                            } else if ui.button("保存").clicked() {
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        if let Some(inner_response) = response {
+                            if let Some(inner) = inner_response.inner {
+                                inner
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
                     }
                 });
-        });
-    }
-
-    // 添加/编辑配置对话框
-    if self.edit_mode {
-        let title = if self.selected_subscription.is_some() {
-            "添加Clash订阅"
-        } else if self.selected_config.is_some() {
-            "编辑VPN配置"
-        } else {
-            "添加VPN配置"
-        };
-        
-        let response = egui::Window::new(title)
-            .open(&mut self.edit_mode)
-            .show(ui.ctx(), |ui| {
-                if self.selected_subscription.is_some() {
-                    // 添加Clash订阅表单
-                    ui.horizontal(|ui| {
-                        ui.label("订阅名称:");
-                        ui.text_edit_singleline(&mut self.new_subscription_name);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("订阅URL:");
-                        ui.text_edit_singleline(&mut self.new_subscription_url);
-                    });
-                    
-                    if self.show_subscription_warning {
-                        ui.label(RichText::new("警告: 从不受信任的来源添加订阅可能存在安全风险。").color(Color32::RED));
-                    }
-                    
-                    ui.checkbox(&mut self.show_subscription_warning, "我了解添加订阅的风险");
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("取消").clicked() {
-                            false
-                        } else if ui.button("添加").clicked() && self.show_subscription_warning {
-                            true
-                        } else {
-                            false
+            
+            if let Some(inner_response) = response {
+                if let Some(true) = inner_response.inner {
+                    if self.selected_subscription.is_some() {
+                        // 添加新订阅
+                        if !self.new_subscription_name.is_empty() && !self.new_subscription_url.is_empty() {
+                            let new_subscription = ClashSubscription::new(
+                                self.next_subscription_id,
+                                &self.new_subscription_name,
+                                &self.new_subscription_url
+                            );
+                            self.add_subscription(new_subscription);
+                            self.new_subscription_name.clear();
+                            self.new_subscription_url.clear();
                         }
-                    }).inner.unwrap_or(false)
-                } else {
-                    // 添加/编辑VPN配置表单
-                    ui.horizontal(|ui| {
-                        ui.label("配置名称:");
-                        ui.text_edit_singleline(&mut self.new_config_name);
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("协议类型:");
-                        egui::ComboBox::from_id_source("protocol_combo")
-                            .selected_text(match self.new_config_protocol {
-                                VpnProtocol::Vmess => "Vmess",
-                                VpnProtocol::Shadowsocks => "Shadowsocks",
-                                VpnProtocol::Trojan => "Trojan",
-                                VpnProtocol::Wireguard => "Wireguard",
-                                VpnProtocol::OpenVPN => "OpenVPN",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Vmess, "Vmess");
-                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Shadowsocks, "Shadowsocks");
-                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Trojan, "Trojan");
-                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::Wireguard, "Wireguard");
-                                ui.selectable_value(&mut self.new_config_protocol, VpnProtocol::OpenVPN, "OpenVPN");
-                            });
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("服务器地址:");
-                        ui.text_edit_singleline(&mut self.new_config_server);
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("端口:");
-                        ui.add(egui::DragValue::new(&mut self.new_config_port).speed(1.0));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        let field_name = match self.new_config_protocol {
-                            VpnProtocol::Vmess => "UUID:",
-                            VpnProtocol::Shadowsocks | VpnProtocol::Trojan => "密码:",
-                            _ => "密钥:",
-                        };
-                        ui.label(field_name);
-                        ui.text_edit_singleline(&mut self.new_config_uuid);
-                    });
-                    
-                    if self.new_config_protocol == VpnProtocol::Vmess || self.new_config_protocol == VpnProtocol::Shadowsocks {
-                        ui.horizontal(|ui| {
-                            ui.label("加密方式:");
-                            ui.text_edit_singleline(&mut self.new_config_encryption);
-                        });
-                    }
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("取消").clicked() {
-                            false
-                        } else if ui.button("保存").clicked() {
-                            true
-                        } else {
-                            false
+                    } else {
+                        // 添加/编辑VPN配置
+                        if !self.new_config_name.is_empty() && !self.new_config_server.is_empty() && !self.new_config_uuid.is_empty() {
+                            let new_config = VpnConfig::new(
+                                self.next_config_id,
+                                &self.new_config_name,
+                                self.new_config_protocol.clone(),
+                                &self.new_config_server,
+                                self.new_config_port,
+                                &self.new_config_uuid,
+                                &self.new_config_encryption
+                            );
+                            self.add_config(new_config);
+                            self.new_config_name.clear();
+                            self.new_config_server.clear();
+                            self.new_config_uuid.clear();
+                            self.new_config_encryption.clear();
+                            self.new_config_port = 443;
+                            self.edit_mode = false;
                         }
-                    }).inner.unwrap_or(false)
-                }
-            });
-        
-        if let Some(response) = response {
-            if response.inner {
-                if self.selected_subscription.is_some() {
-                    // 添加新订阅
-                    if !self.new_subscription_name.is_empty() && !self.new_subscription_url.is_empty() {
-                        let new_subscription = ClashSubscription::new(
-                            self.next_subscription_id,
-                            &self.new_subscription_name,
-                            &self.new_subscription_url
-                        );
-                        self.add_subscription(new_subscription);
-                        self.new_subscription_name.clear();
-                        self.new_subscription_url.clear();
-                    }
-                } else {
-                    // 添加/编辑VPN配置
-                    if !self.new_config_name.is_empty() && !self.new_config_server.is_empty() && !self.new_config_uuid.is_empty() {
-                        let new_config = VpnConfig::new(
-                            self.next_config_id,
-                            &self.new_config_name,
-                            self.new_config_protocol.clone(),
-                            &self.new_config_server,
-                            self.new_config_port,
-                            &self.new_config_uuid,
-                            &self.new_config_encryption
-                        );
-                        self.add_config(new_config);
-                        self.new_config_name.clear();
-                        self.new_config_server.clear();
-                        self.new_config_uuid.clear();
-                        self.new_config_encryption = "auto".to_string();
                     }
                 }
             }
         }
     }
-    
-    // 配置详情区域
-    if let Some(config_id) = self.selected_config {
-        if let Some(config) = self.configs.iter().find(|c| c.id == config_id) {
-            ui.separator();
-            ui.heading("配置详情");
-            
-            Grid::new("config_details_grid")
-                .num_columns(2)
-                .spacing([10.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label("名称:");
-                    ui.label(&config.name);
-                    ui.end_row();
-                    
-                    ui.label("协议:");
-                    ui.label(match config.protocol {
-                        VpnProtocol::Vmess => "Vmess",
-                        VpnProtocol::Shadowsocks => "Shadowsocks",
-                        VpnProtocol::Trojan => "Trojan",
-                        VpnProtocol::Wireguard => "Wireguard",
-                        VpnProtocol::OpenVPN => "OpenVPN",
-                    });
-                    ui.end_row();
-                    
-                    ui.label("服务器:");
-                    ui.label(&config.server);
-                    ui.end_row();
-                    
-                    ui.label("端口:");
-                    ui.label(config.port.to_string());
-                    ui.end_row();
-                    
-                    ui.label(match config.protocol {
-                        VpnProtocol::Vmess => "UUID:",
-                        VpnProtocol::Shadowsocks | VpnProtocol::Trojan => "密码:",
-                        _ => "密钥:",
-                    });
-                    ui.label(&config.uuid);
-                    ui.end_row();
-                    
-                    if config.protocol == VpnProtocol::Vmess || config.protocol == VpnProtocol::Shadowsocks {
-                        ui.label("加密方式:");
-                        ui.label(&config.encryption);
-                        ui.end_row();
-                    }
-                });
-        }
+}
+
+// VPN客户端结构体
+pub struct VmessClient {
+    server: String,
+    port: u16,
+    uuid: String,
+    encryption: String
+}
+
+impl VmessClient {
+    pub fn new(server: String, port: u16, uuid: String, encryption: String) -> Self {
+        Self { server, port, uuid, encryption }
     }
+
+    pub async fn connect(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // 实现Vmess连接逻辑
+        Ok(())
+    }
+}
+
+pub struct ShadowsocksClient {
+    server: String,
+    port: u16,
+    password: String,
+    encryption: String
+}
+
+impl ShadowsocksClient {
+    pub fn new(server: String, port: u16, password: String, encryption: String) -> Self {
+        Self { server, port, password, encryption }
+    }
+
+    pub async fn connect(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // 实现Shadowsocks连接逻辑
+        Ok(())
+    }
+}
+
+pub struct TrojanClient {
+    server: String,
+    port: u16,
+    password: String
+}
+
+impl TrojanClient {
+    pub fn new(server: String, port: u16, password: String) -> Self {
+        Self { server, port, password }
+    }
+    
+    pub fn connect(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // 实现Trojan连接逻辑
+        Ok(())
+    }
+}
+
+pub struct WireguardClient {
+    server: String,
+    port: u16,
+    key: String
+}
+
+impl WireguardClient {
+    pub fn new(server: String, port: u16, key: String) -> Self {
+        Self { server, port, key }
+    }
+
+    pub fn connect(&self) -> Result<(), String> {
+        // 实现Wireguard连接逻辑
+        Ok(())
+    }
+}
+
+pub struct OpenVPNClient {
+    server: String,
+    port: u16,
+    config: String
+}
+
+impl OpenVPNClient {
+    pub fn new(server: String, port: u16, config: String) -> Self {
+        Self { server, port, config }
+    }
+
+    pub fn connect(&self) -> Result<(), String> {
+        // 实现OpenVPN连接逻辑
+        Ok(())
+    }
+}
+
+// 客户端实现
+impl VmessClient {
+    pub fn disconnect() {
+        // 实现断开连接逻辑
+    }
+}
+
+impl ShadowsocksClient {
+    pub fn disconnect() {
+        // 实现断开连接逻辑
+    }
+}
+
+impl TrojanClient {
+    pub fn disconnect() {
+        // 实现断开连接逻辑
+    }
+}
+
+impl WireguardClient {
+    pub fn disconnect() {
+        // 实现断开连接逻辑
+    }
+}
+
+impl OpenVPNClient {
+    pub fn disconnect() {
+        // 实现断开连接逻辑
+    }
+}
