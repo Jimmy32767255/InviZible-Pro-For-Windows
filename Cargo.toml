@@ -13,8 +13,8 @@ egui_extras = "0.22.0"
 rfd = "0.11.0"
 
 # Tor utilities
-torut = "0.3.0"
-webbrowser = "0.5.5"
+torut = "0.2.1"
+webbrowser = "1.0.4"
 
 # Network & Security
 tokio = { version = "1.28.0", features = ["full"] }
