@@ -408,6 +408,142 @@ impl VpnModule {
         Ok(config)
     }
     
+    // 从Base64编码的URL解析Shadowsocks配置
+    fn parse_shadowsocks_url(&self, ss_url: &str) -> Result<VpnConfig, String> {
+        // ss://base64(method:password@host:port)#tag
+        if !ss_url.starts_with("ss://") {
+            return Err("不是有效的Shadowsocks URL".to_string());
+        }
+        
+        let mut parts = ss_url[5..].split('#');
+        let main_part = parts.next().unwrap_or("");
+        let tag = parts.next().unwrap_or("从URL导入的Shadowsocks");
+        
+        // 解码Base64
+        let decoded = match general_purpose::STANDARD.decode(main_part) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                // 尝试新格式: ss://method:password@server:port
+                let without_prefix = &ss_url[5..];
+                let parts: Vec<&str> = without_prefix.split('#').collect();
+                let main_part = parts[0];
+                
+                // 解析主要部分
+                if let Some(at_pos) = main_part.find('@') {
+                    let method_pass = &main_part[..at_pos];
+                    let server_port = &main_part[at_pos+1..];
+                    
+                    if let Some(colon_pos) = method_pass.find(':') {
+                        let method = &method_pass[..colon_pos];
+                        let password = &method_pass[colon_pos+1..];
+                        
+                        if let Some(colon_pos) = server_port.find(':') {
+                            let server = &server_port[..colon_pos];
+                            let port_str = &server_port[colon_pos+1..];
+                            
+                            if let Ok(port) = port_str.parse::<u16>() {
+                                let config = VpnConfig::new(
+                                    0,
+                                    tag,
+                                    VpnProtocol::Shadowsocks,
+                                    server,
+                                    port,
+                                    password,
+                                    method
+                                );
+                                return Ok(config);
+                            }
+                        }
+                    }
+                }
+                
+                return Err("无法解析Shadowsocks URL".to_string());
+            }
+        };
+        
+        let decoded_str = match String::from_utf8(decoded) {
+            Ok(s) => s,
+            Err(_) => return Err("UTF-8解码失败".to_string()),
+        };
+        
+        // 解析格式: method:password@server:port
+        if let Some(at_pos) = decoded_str.find('@') {
+            let method_pass = &decoded_str[..at_pos];
+            let server_port = &decoded_str[at_pos+1..];
+            
+            if let Some(colon_pos) = method_pass.find(':') {
+                let method = &method_pass[..colon_pos];
+                let password = &method_pass[colon_pos+1..];
+                
+                if let Some(colon_pos) = server_port.find(':') {
+                    let server = &server_port[..colon_pos];
+                    let port_str = &server_port[colon_pos+1..];
+                    
+                    if let Ok(port) = port_str.parse::<u16>() {
+                        let config = VpnConfig::new(
+                            0,
+                            tag,
+                            VpnProtocol::Shadowsocks,
+                            server,
+                            port,
+                            password,
+                            method
+                        );
+                        return Ok(config);
+                    }
+                }
+            }
+        }
+        
+        Err("无法解析Shadowsocks URL格式".to_string())
+    }
+    
+    // 从URL解析Trojan配置
+    fn parse_trojan_url(&self, trojan_url: &str) -> Result<VpnConfig, String> {
+        // trojan://password@server:port?allowInsecure=1#tag
+        if !trojan_url.starts_with("trojan://") {
+            return Err("不是有效的Trojan URL".to_string());
+        }
+        
+        let without_prefix = &trojan_url[9..];
+        let parts: Vec<&str> = without_prefix.split('#').collect();
+        let main_part = parts[0];
+        let tag = if parts.len() > 1 { parts[1] } else { "从URL导入的Trojan" };
+        
+        // 解析主要部分
+        if let Some(at_pos) = main_part.find('@') {
+            let password = &main_part[..at_pos];
+            let server_port_params = &main_part[at_pos+1..];
+            
+            // 处理可能的查询参数
+            let server_port = if let Some(q_pos) = server_port_params.find('?') {
+                &server_port_params[..q_pos]
+            } else {
+                server_port_params
+            };
+            
+            if let Some(colon_pos) = server_port.find(':') {
+                let server = &server_port[..colon_pos];
+                let port_str = &server_port[colon_pos+1..];
+                
+                if let Ok(port) = port_str.parse::<u16>() {
+                    let config = VpnConfig::new(
+                        0,
+                        tag,
+                        VpnProtocol::Trojan,
+                        server,
+                        port,
+                        password,
+                        "auto"
+                    );
+                    return Ok(config);
+                }
+            }
+        }
+        
+        Err("无法解析Trojan URL格式".to_string())
+    }
+    
     // 导入VPN配置URL
     fn import_vpn_url(&mut self, url_str: &str) -> Result<(), String> {
         if url_str.starts_with("vmess://") {
@@ -1146,3 +1282,4 @@ impl VpnModule {
                 });
         }
     }
+}
